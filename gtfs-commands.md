@@ -1,11 +1,11 @@
-    gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitAUG2014.zip
-    gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transit%20AUG2012.zip
-    gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitAUG2013.zip
-    gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitAUG2014.zip
-    gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitJAN2013.zip
-    gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitJan2014.zip
-    gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitJUN2013.zip
-    gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitJUN2014.zip
+	gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitAUG2014.zip
+	gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transit%20AUG2012.zip
+	gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitAUG2013.zip
+	gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitAUG2014.zip
+	gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitJAN2013.zip
+	gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitJan2014.zip
+	gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitJUN2013.zip
+	gtfs2 ridetarc.org http://googletransit.ridetarc.org/feed/google_transitJUN2014.zip
 
 	gtfs2 ridetarc.org http://googletransit.ridetarc.org/realtime/alerts/Alerts.pb
 	gtfs2 ridetarc.org http://googletransit.ridetarc.org/realtime/gtfs-realtime/TrapezeRealTimeFeed.pb
@@ -37,3 +37,7 @@
 	gtfs2 list-agencies
 	gtfs2 [--full] ridetarc.org list-routes
 
+# Local Variables:
+# tab-stop-list: (4 8 12 16 20 24 28 32 36 40 44 48 52 56 60 64 68 72 76 80 84 88 92 96 100)
+# tab-width: 4
+# End:
