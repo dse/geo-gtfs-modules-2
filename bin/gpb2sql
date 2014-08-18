@@ -2,4 +2,127 @@
 use warnings;
 use strict;
 
+warn("moo\n");
+my $gpb2sql = Google::ProtocolBuffers::SQL->new();
+warn("moo\n");
+
+package Google::ProtocolBuffers::SQL;
+use warnings;
+use strict;
+
 use Google::ProtocolBuffers;
+use HTTP::Cache::Transparent;
+use POSIX qw(strftime floor uname);
+use File::Path qw(make_path);
+
+sub new {
+    warn("new");
+    my ($class, %args) = @_;
+    my $self = bless(\%args, $class);
+    $self->init();
+    return $self;
+}
+
+sub init {
+    my ($self) = @_;
+    $self->set_cache_options();
+    $self->{ua} = LWP::UserAgent->new();
+    $self->{gtfs_realtime_proto} = "https://developers.google.com/transit/gtfs-realtime/gtfs-realtime.proto";
+    if (defined $ENV{REQUEST_METHOD}) {
+	$self->{my_cache} = "/tmp/gtfs-realtime-data-$>/gtfsrt-cache";
+    } else {
+	$self->{my_cache} = "$ENV{HOME}/.my-gtfs-realtime-data/cache";
+    }
+    make_path($self->{my_cache});
+    $self->pull_protocol();
+}
+
+BEGIN {
+    # in osx you may have to run: cpan Crypt::SSLeay and do other
+    # things
+    my ($uname) = uname();
+    if ($uname =~ m{^Darwin}) {
+	my $ca_file = "/usr/local/opt/curl-ca-bundle/share/ca-bundle.crt";
+	if (-e $ca_file) {
+	    $ENV{HTTPS_CA_FILE} = $ca_file;
+	} else {
+	    warn(<<"END");
+
+Looks like you are using a Mac.  You should run:
+    brew install curl-ca-bundle.
+You may also need to run:
+    sudo cpan Crypt::SSLeay
+
+END
+	    exit(1);
+	}
+    }
+}
+
+sub set_cache_options {
+    my ($self, %args) = @_;
+    if (defined $ENV{REQUEST_METHOD}) {
+	$self->{cache_path} = "/tmp/gtfs-realtime-data-$>/http-cache";
+    } else {
+	$self->{cache_path} = "$ENV{HOME}/.http-cache-transparent";
+    }
+    my $cache_options = $self->{cache_options} //= { BasePath => $self->{cache_path},
+						     Verbose => 0,
+						     NoUpdate => 30,
+						     NoUpdateImpatient => 1 };
+    %$cache_options = (%$cache_options, %args);
+    HTTP::Cache::Transparent::init($cache_options);
+}
+
+use Data::Dumper;
+use IO::String;
+
+sub pull_protocol {
+    my ($self) = @_;
+    warn("pull_protocol");
+    $self->set_cache_options(NoUpdate => 86400, NoUpdateImpatient => 0);
+    my $request = HTTP::Request->new("GET", $self->{gtfs_realtime_proto});
+    my $response = $self->{ua}->request($request);
+    if (!$response->is_success()) {
+	warn(sprintf("Failed to pull protocol: %s\n", $response->status_line()));
+	exit(1);
+    }
+    my $proto = $response->content();
+    if (!defined $proto) {
+	die("Failed to pull protocol: undefined content\n");
+    }
+    if (!$proto) {
+	die("Failed to pull protocol: no content\n");
+    }
+    my $iostring = IO::String->new();
+    my $result = Google::ProtocolBuffers->parse($proto,
+						{ generate_code => $iostring });
+    my $stringref = $iostring->string_ref();
+    my $code = $$stringref;
+
+    $code =~ s{Google::ProtocolBuffers->}{\$self->}g;
+    $code =~ s{unless \([A-Za-z0-9]+(::[A-Za-z0-9]+)*->can\('_pb_fields_list'\)\)}{}g;
+    eval $code;
+}
+
+# called by code pulled and modified by pull_protocol.
+sub create_enum {
+    my ($self, $typename, $values) = @_;
+    $self->{types}->{$typename} = "enum";
+    print("-- $typename\n");
+    foreach my $value (@$values) {
+	my ($value_name, $value) = @$value;
+	printf("-- %8d %s\n", $value, $value_name);
+    }
+}
+sub create_message {
+    my ($self, $typename, $elements, $hash) = @_;
+    $self->{types}->{$typename} = "message";
+    my $tablename = $typename;
+    $tablename =~ s{::}{_}g;
+    print("create table $tablename (\n");
+    foreach my $element (@$elements) {
+	print(Dumper($element));
+    }
+    print("); -- create table\n");
+}
