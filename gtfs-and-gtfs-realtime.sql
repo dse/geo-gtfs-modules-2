@@ -13,7 +13,7 @@ create table geo_gtfs__note (		id			integer				autoincrement,
 );
 -------------------------------------------------------------------------------
 create table gtfs__agency (		geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					agency_id		text		null,
+					agency_id		text		null,		-- for feeds containing only one agency, this can be NULL.
        	     		  		agency_name		text		not null,
 					agency_url		text		not null,
 					agency_timezone		text		not null,
@@ -33,7 +33,7 @@ create table gtfs__stops (		geo_gtfs__feed_id	integer		not null	references geo_g
 					location_type		integer		null,
 					parent_station		text		null,
 					stop_timezone		text		null,
-					wheelchair_boarding	text		null
+					wheelchair_boarding	integer		null
 );
 create table gtfs__routes (		geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
 					route_id		text		not null,
@@ -43,91 +43,91 @@ create table gtfs__routes (		geo_gtfs__feed_id	integer		not null	references geo_
 					route_desc		text		null,
 					route_type		integer		not null,
 					route_url		text		null,
-					route_color		text		null,
-					route_text_color	text		null
+					route_color		varchar(6)	null,
+					route_text_color	varchar(6)	null
 );
 create table gtfs__trips (		geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					route_id
-					service_id
-					trip_id
-					trip_headsign
-					trip_short_name
-					direction_id
-					block_id
-					shape_id
-					wheelchair_accessible
-					bikes_allowed
+					route_id		text		null
+					service_id		text		null
+					trip_id			text		null
+					trip_headsign		text		null
+					trip_short_name		text		null
+					direction_id		text		null
+					block_id		text		null
+					shape_id		text		null
+					wheelchair_accessible	text		null
+					bikes_allowed		text		null
 );
 create table gtfs__stop_times (		geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					trip_id
-					arrival_time
-					departure_time
-					stop_id
-					stop_sequence
-					stop_headsign
-					pickup_type
-					drop_off_type
-					shape_dist_traveled
+					trip_id			text		null
+					arrival_time		text		null
+					departure_time		text		null
+					stop_id			text		null
+					stop_sequence		text		null
+					stop_headsign		text		null
+					pickup_type		text		null
+					drop_off_type		text		null
+					shape_dist_traveled	text		null
 );
 create table gtfs__calendar (		geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					service_id
-					monday
-					tuesday
-					wednesday
-					thursday
-					friday
-					saturday
-					sunday
-					start_date
-					end_date
+					service_id		text		null
+					monday			text		null
+					tuesday			text		null
+					wednesday		text		null
+					thursday		text		null
+					friday			text		null
+					saturday		text		null
+					sunday			text		null
+					start_date		text		null
+					end_date		text		null
 );
 create table gtfs__calendar_dates (	geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					service_id
-					date
-					exception_type
+					service_id		text		null
+					`date`			text		null
+					exception_type		text		null
 );
 create table gtfs__fare_attributes (	geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					fare_id
-					price
-					currency_type
-					payment_method
-					transfers
-					transfer_duration
+					fare_id			text		null
+					price			text		null
+					currency_type		text		null
+					payment_method		text		null
+					transfers		text		null
+					transfer_duration	text		null
 );
 create table gtfs__fare_rules (		geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					fare_id
-					route_id
-					origin_id
-					destination_id
-					contains_id
+					fare_id			text		null
+					route_id		text		null
+					origin_id		text		null
+					destination_id		text		null
+					contains_id		text		null
 );
 create table gtfs__shapes (		geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					shape_id
-					shape_pt_lat
-					shape_pt_lon
-					shape_pt_sequence
-					shape_dist_traveled
+					shape_id		text		null
+					shape_pt_lat		text		null
+					shape_pt_lon		text		null
+					shape_pt_sequence	text		null
+					shape_dist_traveled	text		null
 );
 create table gtfs__frequencies (	geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					trip_id
-					start_time
-					end_time
-					headway_secs
-					exact_times
+					trip_id			text		null
+					start_time		text		null
+					end_time		text		null
+					headway_secs		text		null
+					exact_times		text		null
 );
 create table gtfs__transfers (		geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					from_stop_id
-					to_stop_id
-					transfer_type
-					min_transfer_time
+					from_stop_id		text		null
+					to_stop_id		text		null
+					transfer_type		text		null
+					min_transfer_time	text		null
 );
 create table gtfs__feed_info (		geo_gtfs__feed_id	integer		not null	references geo_gtfs__feed(id),
-					feed_publisher_name
-					feed_publisher_url
-					feed_lang
-					feed_start_date
-					feed_end_date
-					feed_version
+					feed_publisher_name	text		null
+					feed_publisher_url	text		null
+					feed_lang		text		null
+					feed_start_date		text		null
+					feed_end_date		text		null
+					feed_version		text		null
 );
 -------------------------------------------------------------------------------
 create table gtfs_realtime__
