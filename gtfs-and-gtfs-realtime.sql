@@ -6,13 +6,13 @@ insert into geo_gtfs (name, value) values('geo_gtfs.db.version', '0.1');
 create table geo_gtfs_agency (			id			integer				primary key autoincrement,
 						name			varchar(64)	not null	-- preferably the transit agency's domain name, without a www. prefix. - examples: 'ridetarc.org', 'ttc.ca'
 );
-	create index on geo_gtfs_feed(name);
+	create index geo_gtfs_agency_name on geo_gtfs_agency(name);
 create table geo_gtfs_feed (			id			integer				primary key autoincrement,
 						geo_gtfs_agency_id	integer		not null	foreign key references geo_gtfs_agency(id),
 						url			text		not null,
 						is_active		integer		not null	-- updated when feeds added, removed
 );
-	create index on geo_gtfs_feed(is_active);
+	create index geo_gtfs_feed_active on geo_gtfs_feed(is_active);
 create table geo_gtfs_feed_instance (		id			integer				primary key autoincrement,
 						geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_feed(id),
 						filename		text		not null,
@@ -20,15 +20,15 @@ create table geo_gtfs_feed_instance (		id			integer				primary key autoincrement
 						last_modified		integer		null,		-- SHOULD be specified, but some servers omit.
 						is_latest		integer		not null	
 );
-	create index on geo_gtfs_feed_instance(is_latest);
+	create index geo_gtfs_feed_instance_latest on geo_gtfs_feed_instance(is_latest);
 create table geo_gtfs_realtime_feed (		id			integer				primary key autoincrement,
 						geo_gtfs_agency_id	integer		not null	foreign key references geo_gtfs_agency(id),
 						url			text		not null,
 						feed_type		varchar(16)	not null,	-- 'updates', 'positions', 'alerts', 'all'
 						is_active		integer		not null	-- updated when feeds added, removed
 );
-	create index on geo_gtfs_realtime_feed(feed_type);
-	create index on geo_gtfs_realtime_feed(is_active);
+	create index geo_gtfs_realtime_feed_type on geo_gtfs_realtime_feed(feed_type);
+	create index geo_gtfs_realtime_feed_active on geo_gtfs_realtime_feed(is_active);
 create table geo_gtfs_realtime_feed_instance (	id			integer				primary key autoincrement,
 						geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_realtime_feed(id),
 						filename		text		not null,
@@ -36,7 +36,7 @@ create table geo_gtfs_realtime_feed_instance (	id			integer				primary key autoi
 						last_modified		integer		null,
 						is_latest		integer		not null
 );
-	create index on geo_gtfs_realtime_feed_instance(is_latest);
+	create index geo_gtfs_realtime_feed_instance_latest on geo_gtfs_realtime_feed_instance(is_latest);
 -------------------------------------------------------------------------------
 create table gtfs_agency (			geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_feed(id),
 						agency_id		text		null,		-- indexed -- for feeds containing only one agency, this can be NULL.
@@ -47,7 +47,7 @@ create table gtfs_agency (			geo_gtfs_feed_id	integer		not null	foreign key refe
 						agency_phone		text		null,
 						agency_fare_url		text		null
 );
-	create unique index on gtfs_agency(geo_gtfs_feed_id, agency_id);
+	create unique index gtfs_agency_id on gtfs_agency(geo_gtfs_feed_id, agency_id);
 
 create table gtfs_stops (			geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_feed(id),
 						stop_id			text		not null,	-- indexed --
@@ -63,11 +63,11 @@ create table gtfs_stops (			geo_gtfs_feed_id	integer		not null	foreign key refer
 						stop_timezone		text		null,
 						wheelchair_boarding	integer		null
 );
-	create unique index on gtfs_stops(geo_gtfs_feed_id, stop_id);
-	create        index on gtfs_stops(geo_gtfs_feed_id, zone_id);
-	create        index on gtfs_stops(geo_gtfs_feed_id, location_type);
-	create        index on gtfs_stops(geo_gtfs_feed_id, parent_station);
-	create        index on gtfs_stops(geo_gtfs_feed_id, wheelchair_boarding);
+	create unique index gtfs_stops_id                  on gtfs_stops(geo_gtfs_feed_id, stop_id);
+	create        index gtfs_stops_zone_id             on gtfs_stops(geo_gtfs_feed_id, zone_id);
+	create        index gtfs_stops_location_type       on gtfs_stops(geo_gtfs_feed_id, location_type);
+	create        index gtfs_stops_parent_station      on gtfs_stops(geo_gtfs_feed_id, parent_station);
+	create        index gtfs_stops_wheelchair_boarding on gtfs_stops(geo_gtfs_feed_id, wheelchair_boarding);
 
 create table gtfs_routes (			geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_feed(id),
 						route_id		text		not null,	-- indexed --
@@ -80,10 +80,10 @@ create table gtfs_routes (			geo_gtfs_feed_id	integer		not null	foreign key refe
 						route_color		varchar(6)	null,
 						route_text_color	varchar(6)	null
 );
-	create unique index on gtfs_routes (geo_gtfs_feed_id, route_id, agency_id);
-	create        index on gtfs_routes (geo_gtfs_feed_id, agency_id);
-	create        index on gtfs_routes (geo_gtfs_feed_id, route_id);
-	create        index on gtfs_routes (geo_gtfs_feed_id, route_type);
+	create unique index gtfs_routes_id        on gtfs_routes (geo_gtfs_feed_id, route_id, agency_id);
+	create        index gtfs_routes_agency_id on gtfs_routes (geo_gtfs_feed_id, agency_id);
+	create        index gtfs_routes_route_id  on gtfs_routes (geo_gtfs_feed_id, route_id);
+	create        index gtfs_routes_type      on gtfs_routes (geo_gtfs_feed_id, route_type);
 
 create table gtfs_trips (			geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_feed(id),
 						route_id		text		not null	foreign key references gtfs_routes(id),
@@ -97,12 +97,12 @@ create table gtfs_trips (			geo_gtfs_feed_id	integer		not null	foreign key refer
 						wheelchair_accessible	integer		null,
 						bikes_allowed		integer		null
 );
-	create unique index on gtfs_trips (geo_gtfs_feed_id, trip_id);
-	create        index on gtfs_trips (geo_gtfs_feed_id, route_id);
-	create        index on gtfs_trips (geo_gtfs_feed_id, service_id);
-	create        index on gtfs_trips (geo_gtfs_feed_id, direction_id);
-	create        index on gtfs_trips (geo_gtfs_feed_id, block_id);
-	create        index on gtfs_trips (geo_gtfs_feed_id, shape_id);
+	create unique index gtfs_trips_id           on gtfs_trips (geo_gtfs_feed_id, trip_id);
+	create        index gtfs_trips_route_id     on gtfs_trips (geo_gtfs_feed_id, route_id);
+	create        index gtfs_trips_service_id   on gtfs_trips (geo_gtfs_feed_id, service_id);
+	create        index gtfs_trips_direction_id on gtfs_trips (geo_gtfs_feed_id, direction_id);
+	create        index gtfs_trips_block_id     on gtfs_trips (geo_gtfs_feed_id, block_id);
+	create        index gtfs_trips_shape_id     on gtfs_trips (geo_gtfs_feed_id, shape_id);
 
 create table gtfs_stop_times (			geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_feed(id),
 						trip_id			text		not null	foreign key references gtfs_trips(id),
