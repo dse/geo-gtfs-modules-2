@@ -1,14 +1,18 @@
 create table geo_gtfs (				name			varchar(32)	not null	primary key,
 						value			text		null
 );
+delete from geo_gtfs where name = 'geo_gtfs.db.version';
+insert into geo_gtfs (name, value) values('geo_gtfs.db.version', '0.1');
 create table geo_gtfs_agency (			id			integer				primary key autoincrement,
 						name			varchar(64)	not null	-- preferably the transit agency's domain name, without a www. prefix. - examples: 'ridetarc.org', 'ttc.ca'
 );
+	create index on geo_gtfs_feed(name);
 create table geo_gtfs_feed (			id			integer				primary key autoincrement,
 						geo_gtfs_agency_id	integer		not null	foreign key references geo_gtfs_agency(id),
 						url			text		not null,
 						is_active		integer		not null	-- updated when feeds added, removed
 );
+	create index on geo_gtfs_feed(is_active);
 create table geo_gtfs_feed_instance (		id			integer				primary key autoincrement,
 						geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_feed(id),
 						filename		text		not null,
@@ -16,12 +20,15 @@ create table geo_gtfs_feed_instance (		id			integer				primary key autoincrement
 						last_modified		integer		null,		-- SHOULD be specified, but some servers omit.
 						is_latest		integer		not null	
 );
+	create index on geo_gtfs_feed_instance(is_latest);
 create table geo_gtfs_realtime_feed (		id			integer				primary key autoincrement,
 						geo_gtfs_agency_id	integer		not null	foreign key references geo_gtfs_agency(id),
 						url			text		not null,
 						feed_type		varchar(16)	not null,	-- 'updates', 'positions', 'alerts', 'all'
 						is_active		integer		not null	-- updated when feeds added, removed
 );
+	create index on geo_gtfs_realtime_feed(feed_type);
+	create index on geo_gtfs_realtime_feed(is_active);
 create table geo_gtfs_realtime_feed_instance (	id			integer				primary key autoincrement,
 						geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_realtime_feed(id),
 						filename		text		not null,
@@ -29,6 +36,7 @@ create table geo_gtfs_realtime_feed_instance (	id			integer				primary key autoi
 						last_modified		integer		null,
 						is_latest		integer		not null
 );
+	create index on geo_gtfs_realtime_feed_instance(is_latest);
 -------------------------------------------------------------------------------
 create table gtfs_agency (			geo_gtfs_feed_id	integer		not null	foreign key references geo_gtfs_feed(id),
 						agency_id		text		null,		-- indexed -- for feeds containing only one agency, this can be NULL.
