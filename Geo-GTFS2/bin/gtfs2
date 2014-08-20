@@ -1,0 +1,11 @@
+#!/usr/bin/perl
+use warnings;
+use strict;
+
+use FindBin;
+use lib "$FindBin::Bin/../lib";
+
+use Geo::GTFS2;
+
+my $gtfs2 = Geo::GTFS2->new();
+$gtfs2->run_cmdline(@ARGV);
