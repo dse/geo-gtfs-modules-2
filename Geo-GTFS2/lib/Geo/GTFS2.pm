@@ -103,6 +103,7 @@ sub pull_gtfs_realtime_protocol {
     Google::ProtocolBuffers->parse($proto);
     $self->{gtfs_realtime_protocol_pulled} = 1;
 }
+
 sub process_url {
     my ($self, $geo_gtfs_agency_name, $url) = @_;
     my $ua = $self->ua;
@@ -140,6 +141,7 @@ sub process_url {
 	return $self->process_not_yet_known_content($geo_gtfs_agency_name, $request, $response);
     }
 }
+
 sub process_not_yet_known_content {
     my ($self, $geo_gtfs_agency_name, $request, $response) = @_;
     my $url = $response->base;
@@ -154,6 +156,7 @@ sub process_not_yet_known_content {
 	return;
     }
 }
+
 sub process_gtfs_feed {
     my ($self, $geo_gtfs_agency_name, $request, $response) = @_;
     my $url = $response->base;
@@ -163,6 +166,7 @@ sub process_gtfs_feed {
     my $retrieved     = $response->date;
     my $last_modified = $response->last_modified;
 }
+
 sub process_protocol_buffers {
     my ($self, $geo_gtfs_agency_name, $request, $response) = @_;
     $self->pull_gtfs_realtime_protocol();
@@ -224,6 +228,8 @@ sub process_protocol_buffers {
 								 $last_modified,
 								 $header_timestamp);
 }
+
+#------------------------------------------------------------------------------
 
 sub update {
     my ($self, $geo_gtfs_agency_name) = @_;
