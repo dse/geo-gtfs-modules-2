@@ -111,6 +111,7 @@ sub process_url {
     }
     my $request = HTTP::Request->new("GET", $url);
     my $response = $ua->request($request);
+    $request->header("Date-Epoch", time());
     if (!$response->is_success) {
 	warn(sprintf("%s => %s\n", $response->base, $response->status_line));
 	return;
@@ -176,20 +177,12 @@ sub process_protocol_buffers {
 	die("Cannot determine GTFS-realtime feed type from URL:\n  $url\n");
     }
 
-    print($response->headers->as_string);
-    my $retrieved      = $response->date // $response->last_modified;
-    my $last_modified  = $response->last_modified;
+    print($request->as_string);
+    my $retrieved      = $response->date // $response->last_modified // $request->header("Date-Epoch");
+    my $last_modified  = $response->last_modified // -1;
     my $content_length = $response->content_length;
 
-    warn("retrieved $retrieved\n");
-    warn("l.modif'd $last_modified\n");
-    warn("c/length  $content_length\n");
-
     my $o = TransitRealtime::FeedMessage->decode($$cref);
-    if (!eval { scalar(@{$o->{entity}}) }) {
-	warn("Feed contains no data.\n");
-	return;
-    }
     my $header_timestamp = $o->{header}->{timestamp};
     my $base_filename = strftime("%Y/%m/%d/%H%M%SZ", gmtime($header_timestamp // $last_modified));
     my $pb_filename     = sprintf("%s/data/%s/pb/%s/%s.pb",     $self->{dir}, $geo_gtfs_agency_name, $feed_type, $base_filename);
@@ -200,7 +193,7 @@ sub process_protocol_buffers {
     if (!($cached && -e _ && defined $content_length && $content_length == (stat(_))[7])) {
 	make_path(dirname($pb_filename));
 	if (open(my $fh, ">", $pb_filename)) {
-	    warn("Writing $pb_filename\n");
+	    warn("Writing $pb_filename ...\n");
 	    binmode($fh);
 	    print {$fh} $$cref;
 	} else {
@@ -208,23 +201,23 @@ sub process_protocol_buffers {
 	}
 	make_path(dirname($json_filename));
 	if (open(my $fh, ">", $json_filename)) {
-	    warn("Writing $json_filename\n");
+	    warn("Writing $json_filename ...\n");
 	    binmode($fh);
 	    print {$fh} $self->json->encode($o);
 	} else {
 	    die("Cannot write $pb_filename: $!\n");
 	}
+	warn("Done.\n");
     }
 
-    my $geo_gtfs_agency_id = $self->select_or_create_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my $geo_gtfs_realtime_feed_id = $self->select_or_create_geo_gtfs_realtime_feed_id($geo_gtfs_agency_id, $url, $feed_type);
+    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my $geo_gtfs_realtime_feed_id = $self->select_or_insert_geo_gtfs_realtime_feed_id($geo_gtfs_agency_id, $url, $feed_type);
     my $geo_gtfs_realtime_feed_instance_id =
-      $self->select_or_create_geo_gtfs_realtime_feed_instance_id($geo_gtfs_realtime_feed_id,
+      $self->select_or_insert_geo_gtfs_realtime_feed_instance_id($geo_gtfs_realtime_feed_id,
 								 $rel_pb_filename,
 								 $retrieved,
 								 $last_modified,
 								 $header_timestamp);
-    warn("instance id = $geo_gtfs_realtime_feed_instance_id\n");
 }
 sub update {
     my ($self, $geo_gtfs_agency_name) = @_;
@@ -249,92 +242,98 @@ sub list_routes {
     my ($self, $geo_gtfs_agency_name) = @_;
 }
 
-sub select_or_create_id {
+sub select_or_insert_id {
     my ($self, %args) = @_;
     my $table_name = $args{table_name};
     my $id_name = $args{id_name};
-    my %fields = %{$args{fields}};
-    my %more_fields = eval { %{$args{more_fields}} };
-    my %create_fields = (%fields, %more_fields);
 
-    my @keys   = keys(%fields);
-    my @values = map { $fields{$_} } @keys;
-    my $where = join(" and ", map { "($_ = ?)" } @keys);
+    my %key_fields  = eval { %{$args{key_fields}} };
+    my @key_names   = keys(%key_fields);
+    my @key_values  = map { $key_fields{$_} } @key_names;
+    my $key_where   = join(" and ", map { "($_ = ?)" } @key_names);
+
     my $sth;
-    my $die_if_no_id;
+    my $sql;
 
-  get_id:
-    $sth = $self->dbh->prepare("select $id_name from $table_name where $where");
-    $sth->execute(@values);
+    $sql = "select $id_name from $table_name where $key_where";
+    $sth = $self->dbh->prepare($sql);
+    $sth->execute(@key_values);
     my ($id) = $sth->fetchrow_array();
-    $self->dbh->rollback();
+    $sth->finish();
     if (defined $id) {
-	return ($id, "existing") if wantarray;
+	$self->dbh->rollback();
 	return $id;
     }
-    if ($die_if_no_id) {
-	die("UNEXPECTED ERROR 1\n");
+
+    if ($args{before_insert}) {
+	my $sql = $args{before_insert}{sql};
+	my @bind_values = eval { @{$args{before_insert}{bind_values}} };
+	$sth = $self->dbh->prepare($sql);
+	$sth->execute(@bind_values);
+	$sth->finish();
     }
 
-    my @create_keys = keys(%create_fields);
-    my @create_values = map { $create_fields{$_} } @create_keys;
+    my %more_fields  = eval { %{$args{more_fields}} };
+    my %insert_fields = (%key_fields, %more_fields);
+    my @insert_names  = keys(%insert_fields);
+    my @insert_values = map { $insert_fields{$_} } @insert_names;
 
-    my $insert_field_names = join(", ", @create_keys);
-    my $insert_placeholders = join(", ", ("?") x scalar(@create_keys));
+    my $insert_field_names  = join(", ", @insert_names);
+    my $insert_placeholders = join(", ", ("?") x scalar(@insert_names));
 
-    $sth = $self->dbh->prepare("insert into $table_name($insert_field_names) values($insert_placeholders)");
-    $sth->execute(@create_values);
+    $sql = "insert into $table_name($insert_field_names) values($insert_placeholders)";
+    $sth = $self->dbh->prepare($sql);
+    $sth->execute(@insert_values);
+    $sth->finish();
+
+    $id = $self->dbh->last_insert_id("", "", "", "");
+    warn("last insert row id = $id\n");
+
     $self->dbh->commit();
 
-  get_last_insert_id:
-    if ($self->dbh->can("sqlite_last_insert_rowid")) {
-	$id = $self->dbh->sqlite_last_insert_rowid();
-    } else {
-	$id = $self->dbh->last_insert_id("", "", $table_name, $id_name);
-    }
     if (defined $id) {
-	if ($id == 1) {
-	    # POSSIBLE SIGN THIS CODE MAY NOT BE WORKING, OR SIMPLY
-	    # CREATED ROW WITH ID = 1
-	    goto get_id;
-	}
-	return ($id, "new") if wantarray;
+	$self->dbh->rollback();
 	return $id;
     }
-    return undef;
 }
 
-sub select_or_create_geo_gtfs_agency_id {
+sub select_or_insert_geo_gtfs_agency_id {
     my ($self, $geo_gtfs_agency_name) = @_;
-    return $self->select_or_create_id("table_name" => "geo_gtfs_agency",
+    return $self->select_or_insert_id("table_name" => "geo_gtfs_agency",
 				      "id_name" => "id",
-				      "fields" => { "name" => $geo_gtfs_agency_name });
+				      "key_fields" => { "name" => $geo_gtfs_agency_name });
 }
 
-sub select_or_create_geo_gtfs_realtime_feed_id {
+sub select_or_insert_geo_gtfs_realtime_feed_id {
     my ($self, $geo_gtfs_agency_id, $url, $feed_type) = @_;
-    return $self->select_or_create_id("table_name" => "geo_gtfs_realtime_feed",
+    return $self->select_or_insert_id("table_name" => "geo_gtfs_realtime_feed",
 				      "id_name" => "id",
-				      "fields" => { "geo_gtfs_agency_id" => $geo_gtfs_agency_id,
-						    "url"                => $url,
-						    "feed_type"          => $feed_type });
+				      "key_fields" => { "geo_gtfs_agency_id" => $geo_gtfs_agency_id,
+							"url"                => $url,
+							"feed_type"          => $feed_type });
 }
 
-sub select_or_create_geo_gtfs_realtime_feed_instance_id {
+sub select_or_insert_geo_gtfs_realtime_feed_instance_id {
     my ($self,
 	$geo_gtfs_realtime_feed_id,
 	$rel_filename,
 	$retrieved,
 	$last_modified,
 	$header_timestamp) = @_;
-    return $self->select_or_create_id("table_name" => "geo_gtfs_realtime_feed_instance",
+
+    # NOTE: if last_modified is undefined, nothing gets replaced
+    # because anything = NULL returns false.
+    return $self->select_or_insert_id("table_name" => "geo_gtfs_realtime_feed_instance",
 				      "id_name" => "id",
-				      "fields" => { "geo_gtfs_realtime_feed_id" => $geo_gtfs_realtime_feed_id,
-						    "last_modified"             => $last_modified,
-						    "header_timestamp"          => $header_timestamp },
+				      "key_fields" => { "geo_gtfs_realtime_feed_id" => $geo_gtfs_realtime_feed_id,
+							"last_modified"             => $last_modified,
+							"header_timestamp"          => $header_timestamp },
 				      "more_fields" => { "filename"  => $rel_filename,
-							 "retrieved" => $retrieved });
-    
+							 "retrieved" => $retrieved },
+				      "before_insert" => { sql => "update geo_gtfs_realtime_feed_instance set is_latest = 0 " .
+							     "where geo_gtfs_realtime_feed_id = ?",
+							   bind_values => [$geo_gtfs_realtime_feed_id] },
+				     );
 }
 
 sub exec_sqlite_utility {
@@ -377,7 +376,7 @@ sub run_cmdline {
     } elsif ($self->is_agency_name($args[0])) {
 	my $geo_gtfs_agency_name = shift(@args);
 	if (!@args) {
-	    my ($geo_gtfs_agency_id, $status) = $self->select_or_create_geo_gtfs_agency_id($geo_gtfs_agency_name);
+	    my ($geo_gtfs_agency_id, $status) = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
 	    printf("%8d %-8s %s\n", $geo_gtfs_agency_id, $status, $geo_gtfs_agency_name);
 	} elsif ($self->is_url($args[0])) {
 	    foreach my $arg (@args) {
@@ -415,28 +414,19 @@ sub ua {
 }
 sub dbh {
     my ($self) = @_;
-
-	my $ct = (caller(1))[3];
-	my $ct2 = __PACKAGE__ . "::create_tables";
-
     if ($self->{dbh}) {
-	if ($ct ne $ct2) {
-	    $self->create_tables();
-	}
 	return $self->{dbh};
     }
     my $dbfile = $self->{sqlite_filename};
     make_path(dirname($dbfile));
     $self->{dbh} = DBI->connect("dbi:SQLite:$dbfile", "", "",
 				{ RaiseError => 1, AutoCommit => 0 });
-    if ($ct ne $ct2) {
-	$self->create_tables();
-    }
+    $self->create_tables();
     return $self->{dbh};
 }
 sub drop_tables {
     my ($self) = @_;
-    my $dbh = $self->dbh;
+    my $dbh = $self->{dbh};
     print STDERR ("Dropping database tables...\n");
     $self->dbh->do(<<"END");
 drop table if exists geo_gtfs;
@@ -462,7 +452,7 @@ END
 }
 sub create_tables {
     my ($self) = @_;
-    my $dbh = $self->dbh;
+    my $dbh = $self->{dbh};
 
     my $sql = <<"END";
 create table if not exists
@@ -482,7 +472,7 @@ create table if not exists
              geo_gtfs_feed (			id				integer				primary key autoincrement,
 						geo_gtfs_agency_id		integer		not null	references geo_gtfs_agency(id),
 						url				text		not null,
-						is_active			integer		not null	default true	-- updated when feeds added, removed
+						is_active			integer		not null	default 1	-- updated when feeds added, removed
 );
 create index if not exists  geo_gtfs_feed_01 on geo_gtfs_feed(is_active);
 
@@ -497,23 +487,23 @@ create table if not exists
 create index if not exists  geo_gtfs_feed_instance_01 on geo_gtfs_feed_instance(is_latest);
 
 create table if not exists
-             geo_gtfs_realtime_feed (		id				integer				primary key autoincrement,
+             geo_gtfs_realtime_feed (		id				integer				primary key,
 						geo_gtfs_agency_id		integer		not null	references geo_gtfs_agency(id),
 						url				text		not null,
 						feed_type			varchar(16)	not null,	-- 'updates', 'positions', 'alerts', 'all'
-						is_active			integer		not null default true	-- updated when feeds added, removed
+						is_active			integer		not null default 1	-- updated when feeds added, removed
 );
 create index if not exists  geo_gtfs_realtime_feed_01 on geo_gtfs_realtime_feed(feed_type);
 create index if not exists  geo_gtfs_realtime_feed_02 on geo_gtfs_realtime_feed(is_active);
 
 create table if not exists
-             geo_gtfs_realtime_feed_instance (	id				integer				primary key autoincrement,
+             geo_gtfs_realtime_feed_instance (	id				integer				primary key,
 						geo_gtfs_realtime_feed_id	integer		not null	references geo_gtfs_realtime_feed(id),
 						filename			text		not null,
 						retrieved			integer		not null,
 						last_modified			integer		null,
 						header_timestamp		integer		null,
-						is_latest			integer		not null default true
+						is_latest			integer		not null default 1
 );
 create index if not exists  geo_gtfs_realtime_feed_instance_01 on geo_gtfs_realtime_feed_instance(is_latest);
 -------------------------------------------------------------------------------
