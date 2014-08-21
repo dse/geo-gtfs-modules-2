@@ -48,13 +48,19 @@ use fields qw(dir
 	      gtfs_realtime_proto
 	      json
 	      gtfs_realtime_protocol_pulled
+
+	      vehicle_positions
+	      trip_updates
+	      alerts
 	    );
+
 sub new {
     my ($class, %args) = @_;
     my $self = fields::new($class);
     $self->init(%args);
     return $self;
 }
+
 sub init {
     my ($self, %args) = @_;
     if (!defined $ENV{HOME}) {
@@ -71,7 +77,9 @@ sub init {
     $self->{gtfs_realtime_proto} = "https://developers.google.com/transit/gtfs-realtime/gtfs-realtime.proto";
     $self->{gtfs_realtime_protocol_pulled} = 0;
 }
+
 #------------------------------------------------------------------------------
+
 sub pull_gtfs_realtime_protocol {
     my ($self) = @_;
     return 1 if $self->{gtfs_realtime_protocol_pulled};
@@ -80,7 +88,7 @@ sub pull_gtfs_realtime_protocol {
 				     NoUpdate => 86400,
 				     NoUpdateImpatient => 0 });
     my $request = HTTP::Request->new("GET", $self->{gtfs_realtime_proto});
-    my $response = $self->{ua}->request($request);
+    my $response = $self->ua->request($request);
     if (!$response->is_success()) {
 	warn(sprintf("Failed to pull protocol: %s\n", $response->status_line()));
 	exit(1);
@@ -149,7 +157,6 @@ sub process_not_yet_known_content {
 sub process_gtfs_feed {
     my ($self, $geo_gtfs_agency_name, $request, $response) = @_;
     my $url = $response->base;
-    print("process_gtfs_feed $url\n");
     my $cached = ($response->code == 304 || ($response->header("X-Cached") && $response->header("X-Content-Unchanged")));
     my $cref = $response->content_ref;
 
@@ -160,7 +167,6 @@ sub process_protocol_buffers {
     my ($self, $geo_gtfs_agency_name, $request, $response) = @_;
     $self->pull_gtfs_realtime_protocol();
     my $url = $response->base;
-    print("process_protocol_buffers $url\n");
     my $cached = ($response->code == 304 || ($response->header("X-Cached") && $response->header("X-Content-Unchanged")));
     my $cref = $response->content_ref;
 
@@ -177,7 +183,6 @@ sub process_protocol_buffers {
 	die("Cannot determine GTFS-realtime feed type from URL:\n  $url\n");
     }
 
-    print($request->as_string);
     my $retrieved      = $response->date // $response->last_modified // $request->header("Date-Epoch");
     my $last_modified  = $response->last_modified // -1;
     my $content_length = $response->content_length;
@@ -219,27 +224,284 @@ sub process_protocol_buffers {
 								 $last_modified,
 								 $header_timestamp);
 }
+
 sub update {
     my ($self, $geo_gtfs_agency_name) = @_;
+    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
 }
+
 sub update_realtime {
     my ($self, $geo_gtfs_agency_name) = @_;
+    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my @feeds = $self->get_geo_gtfs_realtime_feeds($geo_gtfs_agency_id);
+    foreach my $feed (@feeds) {
+	my $url = $feed->{url};
+	$self->process_url($geo_gtfs_agency_name, $url);
+    }
 }
+
+sub list_latest_realtime_feeds {
+    my ($self, $geo_gtfs_agency_name) = @_;
+    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my @instances = $self->get_latest_geo_gtfs_realtime_feed_instances($geo_gtfs_agency_id);
+    print("id      feed type  filename\n");
+    print("------  ---------  -------------------------------------------------------------------------------\n");
+    foreach my $i (@instances) {
+	printf("%6d  %-9s  %s\n",
+	       @{$i}{qw(id feed_type filename)});
+    }
+}
+
 sub realtime_status {
     my ($self, $geo_gtfs_agency_name) = @_;
+    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my @instances = $self->get_latest_geo_gtfs_realtime_feed_instances($geo_gtfs_agency_id);
+    my %instances = map { ($_->{feed_type}, $_) } @instances;
+
+    my @vp;
+    my @tu;
+    my @alerts;
+
+    my $process_entity = sub {
+	my ($e) = @_;
+	my $alert = $e->{alert};
+	my $vp    = $e->{vehicle};
+	my $tu    = $e->{trip_update};
+	if (defined $e->{header_timestamp}) {
+	    $alert->{header_timestamp} = $e->{header_timestamp} if $alert;
+	    $vp   ->{header_timestamp} = $e->{header_timestamp} if $vp   ;
+	    $tu   ->{header_timestamp} = $e->{header_timestamp} if $tu   ;
+	}
+	push(@vp, $vp)       if $vp;
+	push(@tu, $tu)       if $tu;
+	push(@alerts, $alert) if $alert;
+    };
+
+    if ($instances{all}) {
+	my $o = $self->read_feed($instances{all}{filename});
+	my $header_timestamp = eval { $o->{header}->{timestamp} };
+	foreach my $e (@{$o->{entity}}) {
+	    $e->{header_timestamp} = $header_timestamp if defined $header_timestamp;
+	    $process_entity->($e);
+	}
+    } else {
+	foreach my $feed_type (qw(alerts updates positions)) {
+	    my $i = $instances{$feed_type};
+	    if ($i) {
+		my $o = $self->read_feed($instances{all}{filename});
+		my $header_timestamp = eval { $o->{header}->{timestamp} };
+		foreach my $e (@{$o->{entity}}) {
+		    $e->{header_timestamp} = $header_timestamp if defined $header_timestamp;
+		    $process_entity->($e);
+		}
+	    }
+	}
+    }
+
+    my $status_info = $self->get_useful_realtime_status_info(\@vp, \@tu, \@alerts);
+    my @info = @{$status_info->{info}};
+
+    @info = (map { $_->[0] }
+	       sort { _route_id_sort($a->[1], $b->[1]) }
+		 map { [$_, $_->{route_id} // ""] }
+		   @info);
+
+    foreach my $info (@info) {
+	my $age = $info->{header_timestamp} - $info->{timestamp};
+	if ($age >= 3600) {
+	    $info->{old} = 2;
+	} elsif ($age >= 600) {
+	    $info->{old} = 1;
+	} else {
+	    $info->{old} = 0;
+	}
+    }
+
+    my $print = sub {
+	my ($info) = @_;
+	printf("%-7s  %10.6f  %10.6f  %-5s  %-5s %-8s  %-5s %-8s\n",
+	       $info->{label} // "-",
+	       $info->{latitude} // 0,
+	       $info->{longitude} // 0,
+	       $info->{route_id} // "-",
+	       $info->{timestamp_date} // "-",
+	       $info->{timestamp_time} // "-",
+	       $info->{header_timestamp_date} // "-",
+	       $info->{header_timestamp_time} // "-",
+	      );
+    };
+
+    print("                                                        header        \n");
+    print("vehicle  lat.        lng.        route  date  time      date  time    \n");
+    print("-------  ----------  ----------  -----  ----- --------  ----- --------\n");
+    $print->($_) foreach grep { $_->{old} == 0 } @info;
+    print("-------  ----------  ----------  -----  ----- --------  ----- --------\n");
+    $print->($_) foreach grep { $_->{old} == 1 } @info;
+    print("-------  ----------  ----------  -----  ----- --------  ----- --------\n");
+    $print->($_) foreach grep { $_->{old} == 2 } @info;
 }
+
+sub get_useful_realtime_status_info {
+    my ($self, $vp_array, $tu_array, $alerts_array) = @_;
+
+    my %vehicle_info;
+    my %trip_info;
+    my @info;
+
+    foreach my $vp (@$vp_array) {
+	my $header_timestamp = eval { $vp->{header_timestamp} };
+	my $timestamp        = eval { $vp->{timestamp} };
+	my $trip_id          = eval { $vp->{trip}->{trip_id} };
+	my $label            = eval { $vp->{vehicle}->{label} };
+	my $latitude         = eval { $vp->{position}->{latitude} };
+	my $longitude        = eval { $vp->{position}->{longitude} };
+
+	my $info = {};
+	push(@info, $info);
+	$info->{timestamp}        = $timestamp	      if defined $timestamp;
+	$info->{header_timestamp} = $header_timestamp if defined $header_timestamp;
+	$info->{trip_id}	  = $trip_id	      if defined $trip_id;
+	$info->{label}		  = $label	      if defined $label;
+	$info->{longitude}	  = $longitude	      if defined $longitude;
+	$info->{latitude}	  = $latitude	      if defined $latitude;
+
+	if (defined $timestamp) {
+	    $info->{timestamp_date} = strftime("%m/%d",    localtime($timestamp));
+	    $info->{timestamp_time} = strftime("%H:%M:%S", localtime($timestamp));
+	}
+	if (defined $header_timestamp) {
+	    $info->{header_timestamp_date} = strftime("%m/%d",    localtime($header_timestamp));
+	    $info->{header_timestamp_time} = strftime("%H:%M:%S", localtime($header_timestamp));
+	}
+
+	$vehicle_info{$label} = $info if defined $label;
+	$trip_info{$trip_id} = $info if defined $trip_id;
+    }
+    foreach my $tu (@$tu_array) {
+	my $trip_id         = eval { $tu->{trip}->{trip_id} };
+	my $start_time      = eval { $tu->{trip}->{start_time} };
+	my $route_id        = eval { $tu->{trip}->{route_id} };
+	my $start_date      = eval { $tu->{trip}->{start_date} };
+	my $label           = eval { $tu->{vehicle}->{label} };
+
+	my $vehicle_info = $vehicle_info{$label};
+	my $trip_info    = $trip_info{$trip_id};
+	if ($vehicle_info && $trip_info && $vehicle_info ne $trip_info) {
+	    die("UNEXPECTED ERROR TYPE 2\n");
+	}
+	if (!$vehicle_info && !$trip_info) {
+	    next;
+	}
+	my $info = $vehicle_info // $trip_info;
+	if (!$info) {
+	    $info = {};
+	    push(@info, $info);
+	    if (defined $trip_id) {
+		$trip_info{$trip_id} = $info;
+		$info->{trip_id} = $trip_id;
+	    }
+	    if (defined $label) {
+		$vehicle_info{$label} = $info;
+		$info->{label} = $label;
+	    }
+	}
+
+	$info->{start_time} = $start_time if defined $start_time;
+	$info->{start_date} = $start_date if defined $start_date;
+	$info->{route_id}   = $route_id   if defined $route_id;
+    }
+
+    return {
+	vp           => $vp_array,
+	tu           => $tu_array,
+	alerts       => $alerts_array,
+	vehicle_info => \%vehicle_info,
+	trip_info    => \%trip_info,
+	info         => \@info,
+    };
+}
+
+sub _route_id_sort {
+    my ($stringA, $stringB) = @_;
+    if ($stringA =~ m{\d+}) {
+	my ($prefixA, $numberA, $suffixA) = ($`, $&, $');
+	if ($stringB =~ m{\d+}) {
+	    my ($prefixB, $numberB, $suffixB) = ($`, $&, $');
+	    if ($prefixA eq $prefixB) {
+		return ($numberA <=> $numberB) || _route_id_sort($suffixA, $suffixB);
+	    }
+	}
+    }
+    return $stringA cmp $stringB;
+}
+
+use File::Spec;
+
+sub read_feed {
+    my ($self, $filename) = @_;
+    $self->pull_gtfs_realtime_protocol();
+    $filename = File::Spec->rel2abs($filename, $self->{dir});
+    if (open(my $fh, "<", $filename)) {
+	binmode($fh);
+	my $o = TransitRealtime::FeedMessage->decode(join("", <$fh>));
+	return $o;
+    } else {
+	die("Cannot read $filename: $!\n");
+    }
+}
+
 sub list_agencies {
     my ($self) = @_;
     my $sth = $self->dbh->prepare("select * from geo_gtfs_agency");
     $sth->execute();
-    print("id       name\n");
-    print("-------- --------------------------------\n");
+    print("id    name\n");
+    print("----  --------------------------------\n");
     while (my $row = $sth->fetchrow_hashref()) {
-	printf("%8d %s\n", $row->{id}, $row->{name});
+	printf("%4d  %s\n", $row->{id}, $row->{name});
     }
 }
+
 sub list_routes {
     my ($self, $geo_gtfs_agency_name) = @_;
+}
+
+sub list_realtime_feeds {
+    my ($self, $geo_gtfs_agency_name) = @_;
+    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my @feeds = $self->get_geo_gtfs_realtime_feeds($geo_gtfs_agency_id);
+    print("id    active?  feed type  url\n");
+    print("----  -------  ---------  -------------------------------------------------------------------------------\n");
+    foreach my $feed (@feeds) {
+	printf("%4d  %4d     %-9s  %s\n", @{$feed}{qw(id is_active feed_type url)});
+    }
+}
+
+sub get_geo_gtfs_realtime_feeds {
+    my ($self, $geo_gtfs_agency_id) = @_;
+    my $sth = $self->dbh->prepare("select * from geo_gtfs_realtime_feed where geo_gtfs_agency_id = ?");
+    $sth->execute($geo_gtfs_agency_id);
+    my @rows;
+    while (my $row = $sth->fetchrow_hashref()) {
+	push(@rows, $row);
+    }
+    return @rows;
+}
+
+sub get_latest_geo_gtfs_realtime_feed_instances {
+    my ($self, $geo_gtfs_agency_id) = @_;
+    my $sql = <<"END";
+	select	i.*, f.feed_type
+	from	geo_gtfs_realtime_feed_instance i
+		join geo_gtfs_realtime_feed f on i.geo_gtfs_realtime_feed_id = f.id
+       		where f.geo_gtfs_agency_id = ? and i.is_latest
+END
+    my $sth = $self->dbh->prepare($sql);
+    $sth->execute($geo_gtfs_agency_id);
+    my @rows;
+    while (my $row = $sth->fetchrow_hashref()) {
+	push(@rows, $row);
+    }
+    return @rows;
 }
 
 sub select_or_insert_id {
@@ -287,7 +549,6 @@ sub select_or_insert_id {
     $sth->finish();
 
     $id = $self->dbh->last_insert_id("", "", "", "");
-    warn("last insert row id = $id\n");
 
     $self->dbh->commit();
 
@@ -388,6 +649,8 @@ sub run_cmdline {
 	    }
 	} elsif ($args[0] eq "update") {
 	    $self->update($geo_gtfs_agency_name);
+	} elsif ($args[0] eq "list-realtime-feeds") {
+	    $self->list_realtime_feeds($geo_gtfs_agency_name);
 	} elsif ($args[0] eq "update-realtime") {
 	    $self->update_realtime($geo_gtfs_agency_name);
 	} elsif ($args[0] eq "realtime-status") {
