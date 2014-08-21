@@ -11,33 +11,14 @@ use File::MMagic;		# best detects .zip files; allows us
                                 # Buffers files.
 use DBI;
 use File::Path qw(make_path);
-use File::Basename qw(dirname);
+use File::Basename qw(dirname basename);
 use HTTP::Date;
 use Data::Dumper;
 use Google::ProtocolBuffers;
 use JSON qw(-convert_blessed_universally);
-
-BEGIN {
-    # in osx you may have to run: cpan Crypt::SSLeay and do other
-    # things
-    my ($uname) = uname();
-    if ($uname =~ m{^Darwin}) {
-	my $ca_file = "/usr/local/opt/curl-ca-bundle/share/ca-bundle.crt";
-	if (-e $ca_file) {
-	    $ENV{HTTPS_CA_FILE} = $ca_file;
-	} else {
-	    warn(<<"END");
-
-Looks like you are using a Mac.  You should run:
-    brew install curl-ca-bundle.
-You may also need to run:
-    sudo cpan Crypt::SSLeay
-
-END
-	    exit(1);
-	}
-    }
-}
+use List::MoreUtils qw(all);
+use File::Spec;
+use Text::CSV;
 
 use fields qw(dir
 	      sqlite_filename
@@ -61,11 +42,14 @@ sub new {
     return $self;
 }
 
-sub init {
-    my ($self, %args) = @_;
+BEGIN {
     if (!defined $ENV{HOME}) {
 	$ENV{HOME} = (getpwent())[7];
     }
+}
+
+sub init {
+    my ($self, %args) = @_;
     my $dir = $self->{dir} = "$ENV{HOME}/.geo-gtfs2";
     $self->{http_cache_dir} = "$dir/http-cache";
     my $dbfile = $self->{sqlite_filename} = "$dir/google_transit.sqlite";
@@ -78,31 +62,9 @@ sub init {
     $self->{gtfs_realtime_protocol_pulled} = 0;
 }
 
-#------------------------------------------------------------------------------
-
-sub pull_gtfs_realtime_protocol {
-    my ($self) = @_;
-    return 1 if $self->{gtfs_realtime_protocol_pulled};
-    HTTP::Cache::Transparent::init({ BasePath => $self->{http_cache_dir},
-				     Verbose => 0,
-				     NoUpdate => 86400,
-				     NoUpdateImpatient => 0 });
-    my $request = HTTP::Request->new("GET", $self->{gtfs_realtime_proto});
-    my $response = $self->ua->request($request);
-    if (!$response->is_success()) {
-	warn(sprintf("Failed to pull protocol: %s\n", $response->status_line()));
-	exit(1);
-    }
-    my $proto = $response->content();
-    if (!defined $proto) {
-	die("Failed to pull protocol: undefined content\n");
-    }
-    if (!$proto) {
-	die("Failed to pull protocol: no content\n");
-    }
-    Google::ProtocolBuffers->parse($proto);
-    $self->{gtfs_realtime_protocol_pulled} = 1;
-}
+###############################################################################
+# GENERAL
+###############################################################################
 
 sub process_url {
     my ($self, $geo_gtfs_agency_name, $url) = @_;
@@ -157,14 +119,32 @@ sub process_not_yet_known_content {
     }
 }
 
-sub process_gtfs_feed {
-    my ($self, $geo_gtfs_agency_name, $request, $response) = @_;
-    my $url = $response->base;
-    my $cached = ($response->code == 304 || ($response->header("X-Cached") && $response->header("X-Content-Unchanged")));
-    my $cref = $response->content_ref;
+###############################################################################
+# GTFS-REALTIME
+###############################################################################
 
-    my $retrieved     = $response->date;
-    my $last_modified = $response->last_modified;
+sub pull_gtfs_realtime_protocol {
+    my ($self) = @_;
+    return 1 if $self->{gtfs_realtime_protocol_pulled};
+    HTTP::Cache::Transparent::init({ BasePath => $self->{http_cache_dir},
+				     Verbose => 0,
+				     NoUpdate => 86400,
+				     NoUpdateImpatient => 0 });
+    my $request = HTTP::Request->new("GET", $self->{gtfs_realtime_proto});
+    my $response = $self->ua->request($request);
+    if (!$response->is_success()) {
+	warn(sprintf("Failed to pull protocol: %s\n", $response->status_line()));
+	exit(1);
+    }
+    my $proto = $response->content();
+    if (!defined $proto) {
+	die("Failed to pull protocol: undefined content\n");
+    }
+    if (!$proto) {
+	die("Failed to pull protocol: no content\n");
+    }
+    Google::ProtocolBuffers->parse($proto);
+    $self->{gtfs_realtime_protocol_pulled} = 1;
 }
 
 sub process_protocol_buffers {
@@ -205,6 +185,7 @@ sub process_protocol_buffers {
 	    warn("Writing $pb_filename ...\n");
 	    binmode($fh);
 	    print {$fh} $$cref;
+	    close($fh);
 	} else {
 	    die("Cannot write $pb_filename: $!\n");
 	}
@@ -213,6 +194,7 @@ sub process_protocol_buffers {
 	    warn("Writing $json_filename ...\n");
 	    binmode($fh);
 	    print {$fh} $self->json->encode($o);
+	    close($fh);
 	} else {
 	    die("Cannot write $pb_filename: $!\n");
 	}
@@ -227,13 +209,6 @@ sub process_protocol_buffers {
 								 $retrieved,
 								 $last_modified,
 								 $header_timestamp);
-}
-
-#------------------------------------------------------------------------------
-
-sub update {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
 }
 
 sub update_realtime {
@@ -284,7 +259,7 @@ sub realtime_status {
     };
 
     if ($instances{all}) {
-	my $o = $self->read_feed($instances{all}{filename});
+	my $o = $self->read_realtime_feed($instances{all}{filename});
 	my $header_timestamp = eval { $o->{header}->{timestamp} };
 	foreach my $e (@{$o->{entity}}) {
 	    $e->{header_timestamp} = $header_timestamp if defined $header_timestamp;
@@ -294,7 +269,7 @@ sub realtime_status {
 	foreach my $feed_type (qw(alerts updates positions)) {
 	    my $i = $instances{$feed_type};
 	    if ($i) {
-		my $o = $self->read_feed($instances{all}{filename});
+		my $o = $self->read_realtime_feed($instances{all}{filename});
 		my $header_timestamp = eval { $o->{header}->{timestamp} };
 		foreach my $e (@{$o->{entity}}) {
 		    $e->{header_timestamp} = $header_timestamp if defined $header_timestamp;
@@ -304,52 +279,58 @@ sub realtime_status {
 	}
     }
 
-    my $status_info = $self->get_useful_realtime_status_info(\@vp, \@tu, \@alerts);
+    my $status_info = $self->get_useful_realtime_status_info($geo_gtfs_agency_id, \@vp, \@tu, \@alerts);
     my @info = @{$status_info->{info}};
 
-    @info = (map { $_->[0] }
-	       sort { _route_id_sort($a->[1], $b->[1]) }
-		 map { [$_, $_->{route_id} // ""] }
-		   @info);
+    print("                                                                          realtime      \n");
+    print("veh.  lat.      lng.       route                            time      seq dep/arr  delay\n");
+    print("----- --------- ---------- ----- -------------------------- --------  --- -------- -----\n");
 
-    foreach my $info (@info) {
-	my $age = $info->{header_timestamp} - $info->{timestamp};
-	if ($age >= 3600) {
-	    $info->{old} = 2;
-	} elsif ($age >= 600) {
-	    $info->{old} = 1;
-	} else {
-	    $info->{old} = 0;
-	}
-    }
-
-    my $print = sub {
-	my ($info) = @_;
-	printf("%-7s  %10.6f  %10.6f  %-5s  %-5s %-8s  %-5s %-8s\n",
-	       $info->{label} // "-",
-	       $info->{latitude} // 0,
-	       $info->{longitude} // 0,
-	       $info->{route_id} // "-",
-	       $info->{timestamp_date} // "-",
-	       $info->{timestamp_time} // "-",
-	       $info->{header_timestamp_date} // "-",
-	       $info->{header_timestamp_time} // "-",
-	      );
+    my $get_info_line = sub {
+	my ($info, $route, $trip) = @_;
+	return sprintf("%-5s %9.5f %10.5f %-5s %-26.26s %-8s",
+		       $info->{label} // "-",
+		       $info->{latitude} // 0,
+		       $info->{longitude} // 0,
+		       eval { $info->{route}->{route_short_name} } // "-",
+		       eval { $info->{trip}->{trip_headsign}     } // "-",
+		       $info->{timestamp_time} // "-",
+		      );
     };
 
-    print("                                                        header        \n");
-    print("vehicle  lat.        lng.        route  date  time      date  time    \n");
-    print("-------  ----------  ----------  -----  ----- --------  ----- --------\n");
-    $print->($_) foreach grep { $_->{old} == 0 } @info;
-    print("-------  ----------  ----------  -----  ----- --------  ----- --------\n");
-    $print->($_) foreach grep { $_->{old} == 1 } @info;
-    print("-------  ----------  ----------  -----  ----- --------  ----- --------\n");
-    $print->($_) foreach grep { $_->{old} == 2 } @info;
+    my @current = grep { $_->{old} == 0 } @info;
+    my @dad     = grep { $_->{old} == 1 } @info;
+    my @cooldad = grep { $_->{old} == 2 } @info;
+
+    foreach my $info (@current) {
+	my $route = $info->{route};
+	my $trip  = $info->{trip};
+	my $line = $get_info_line->($info, $route, $trip);
+
+	print($line);
+	my $first = 1;
+	foreach my $stu (eval { @{$info->{stop_time_update}} }) {
+	    my $stuline = sprintf("%3d %-8s %5d",
+				  $stu->{stop_sequence} // 0,
+				  defined $stu->{time} ? strftime("%H:%M:%S", localtime($stu->{time})) : "-",
+				  $stu->{delay} // 0);
+	    if ($first) {
+		print("  ");
+	    } else {
+		print(" " x (length($line) + 2));
+	    }
+	    print($stuline, "\n");
+	    $first = 0;
+	}
+	if (!$info->{stop_time_update} || !scalar(@{$info->{stop_time_update}})) {
+	    print("\n");
+	}
+    }
 }
 
 sub get_useful_realtime_status_info {
-    my ($self, $vp_array, $tu_array, $alerts_array) = @_;
-
+    my ($self, $geo_gtfs_agency_id, $vp_array, $tu_array, $alerts_array) = @_;
+    
     my %vehicle_info;
     my %trip_info;
     my @info;
@@ -383,6 +364,7 @@ sub get_useful_realtime_status_info {
 	$vehicle_info{$label} = $info if defined $label;
 	$trip_info{$trip_id} = $info if defined $trip_id;
     }
+
     foreach my $tu (@$tu_array) {
 	my $trip_id         = eval { $tu->{trip}->{trip_id} };
 	my $start_time      = eval { $tu->{trip}->{start_time} };
@@ -415,8 +397,73 @@ sub get_useful_realtime_status_info {
 	$info->{start_time} = $start_time if defined $start_time;
 	$info->{start_date} = $start_date if defined $start_date;
 	$info->{route_id}   = $route_id   if defined $route_id;
+
+	my @stu = eval { @{$tu->{stop_time_update}} };
+	foreach my $stu (@stu) {
+	    my $stuinfo = {};
+	    my $stop_sequence = $stu->{stop_sequence};
+	    my $stop_id = $stu->{stop_id};
+	    my $departure_time  = eval { $stu->{departure}->{time} }  // eval { $stu->{artival}->{time}  };
+	    my $departure_delay = eval { $stu->{departure}->{delay} } // eval { $stu->{artival}->{delay} };
+	    my $is_arrival      = ($stu->{arrival} && !$stu->{departure}) ? 1 : undef;
+	    $stuinfo->{stop_sequence} = $stop_sequence   if defined $stop_sequence;
+	    $stuinfo->{stop_id}       = $stop_id         if defined $stop_id;
+	    $stuinfo->{time}          = $departure_time  if defined $departure_time;
+	    $stuinfo->{delay}         = $departure_delay if defined $departure_delay;
+	    $stuinfo->{is_arrival}    = $is_arrival      if defined $is_arrival;
+	    push(@{$info->{stop_time_update}}, $stuinfo) if scalar(keys(%$stuinfo));
+	}
+	print(Dumper($tu));
     }
 
+    foreach my $info (@info) {
+	my $age = $info->{header_timestamp} - $info->{timestamp};
+	$info->{age} = $age;
+	if ($age >= 3600) {
+	    $info->{old} = 2;
+	} elsif ($age >= 600) {
+	    $info->{old} = 1;
+	} else {
+	    $info->{old} = 0;
+	}
+
+	my ($geo_gtfs_feed_instance_id, $service_id)
+	  = $self->get_geo_gtfs_feed_instance_id_and_service_id($geo_gtfs_agency_id, $info->{start_date});
+
+	$info->{geo_gtfs_feed_instance_id} = $geo_gtfs_feed_instance_id;
+	$info->{service_id}                = $service_id;
+	if (defined $info->{route_id}) {
+	    my $route = $info->{route} = $self->get_gtfs_route($geo_gtfs_feed_instance_id, $info->{route_id});
+	    if (defined $route) {
+		$info->{route_short_name} = $route->{route_short_name};
+		$info->{route_long_name}  = $route->{route_long_name};
+		$info->{route_desc}       = $route->{route_desc};
+		$info->{route_type}       = $route->{route_type};
+		$info->{route_url}        = $route->{route_url};
+		$info->{route_color}      = $route->{route_color};
+		$info->{route_text_color} = $route->{route_text_color};
+	    }
+	}
+	if (defined $info->{trip_id}) {
+	    my $trip = $info->{trip} = $self->get_gtfs_trip($geo_gtfs_feed_instance_id, $info->{route_id}, $service_id, $info->{trip_id});
+	    if (defined $trip) {
+		$info->{wheelchair_accessible} = $trip->{wheelchair_accessible};
+		$info->{trip_headsign}         = $trip->{trip_headsign};
+		$info->{trip_short_name}       = $trip->{trip_short_name};
+		$info->{direction_id}          = $trip->{direction_id};
+		$info->{block_id}              = $trip->{block_id};
+		$info->{shape_id}              = $trip->{shape_id};
+		$info->{bikes_allowed}         = $trip->{bikes_allowed};
+	    }
+	}
+    }
+
+    @info = (map { $_->[0] }
+	       sort { _route_id_sort($a->[1], $b->[1]) || $a->[2] <=> $b->[2] }
+		 map { [$_,
+			$_->{route_id} // "",
+			$_->{direction_id} // 0] }
+		   @info);
     return {
 	vp           => $vp_array,
 	tu           => $tu_array,
@@ -441,9 +488,7 @@ sub _route_id_sort {
     return $stringA cmp $stringB;
 }
 
-use File::Spec;
-
-sub read_feed {
+sub read_realtime_feed {
     my ($self, $filename) = @_;
     $self->pull_gtfs_realtime_protocol();
     $filename = File::Spec->rel2abs($filename, $self->{dir});
@@ -454,21 +499,6 @@ sub read_feed {
     } else {
 	die("Cannot read $filename: $!\n");
     }
-}
-
-sub list_agencies {
-    my ($self) = @_;
-    my $sth = $self->dbh->prepare("select * from geo_gtfs_agency");
-    $sth->execute();
-    print("id    name\n");
-    print("----  --------------------------------\n");
-    while (my $row = $sth->fetchrow_hashref()) {
-	printf("%4d  %s\n", $row->{id}, $row->{name});
-    }
-}
-
-sub list_routes {
-    my ($self, $geo_gtfs_agency_name) = @_;
 }
 
 sub list_realtime_feeds {
@@ -508,6 +538,269 @@ END
 	push(@rows, $row);
     }
     return @rows;
+}
+
+sub select_or_insert_geo_gtfs_realtime_feed_id {
+    my ($self, $geo_gtfs_agency_id, $url, $feed_type) = @_;
+    return $self->select_or_insert_id("table_name" => "geo_gtfs_realtime_feed",
+				      "id_name" => "id",
+				      "key_fields" => { "geo_gtfs_agency_id" => $geo_gtfs_agency_id,
+							"url"                => $url,
+							"feed_type"          => $feed_type });
+}
+
+sub select_or_insert_geo_gtfs_realtime_feed_instance_id {
+    my ($self,
+	$geo_gtfs_realtime_feed_id,
+	$rel_filename,
+	$retrieved,
+	$last_modified,
+	$header_timestamp) = @_;
+
+    # NOTE: if last_modified is undefined, nothing gets replaced
+    # because anything = NULL returns false.
+    return $self->select_or_insert_id("table_name" => "geo_gtfs_realtime_feed_instance",
+				      "id_name" => "id",
+				      "key_fields" => { "geo_gtfs_realtime_feed_id" => $geo_gtfs_realtime_feed_id,
+							"last_modified"             => $last_modified,
+							"header_timestamp"          => $header_timestamp },
+				      "more_fields" => { "filename"  => $rel_filename,
+							 "retrieved" => $retrieved },
+				      "before_insert" => { sql => "update geo_gtfs_realtime_feed_instance set is_latest = 0 " .
+							     "where geo_gtfs_realtime_feed_id = ?",
+							   bind_values => [$geo_gtfs_realtime_feed_id] },
+				     );
+}
+
+sub get_gtfs_route {
+    my ($self, $geo_gtfs_feed_instance_id, $route_id) = @_;
+    my $sql = <<"END";
+	select *
+	from gtfs_routes
+	where geo_gtfs_feed_instance_id = ? and route_id = ?
+END
+    my $sth = $self->dbh->prepare($sql);
+    $sth->execute($geo_gtfs_feed_instance_id, $route_id);
+    #printf("%s, %s\n", $geo_gtfs_feed_instance_id, $route_id);
+    my $result = $sth->fetchrow_hashref();
+    #print(Dumper($result));
+    return $result;
+}
+
+sub get_gtfs_trip {
+    my ($self, $geo_gtfs_feed_instance_id, $route_id, $service_id, $trip_id) = @_;
+    my $sql = <<"END";
+	select *
+	from gtfs_trips
+	where geo_gtfs_feed_instance_id = ? and route_id = ? and service_id = ? and trip_id = ?
+END
+    my $sth = $self->dbh->prepare($sql);
+    $sth->execute($geo_gtfs_feed_instance_id, $route_id, $service_id, $trip_id);
+    my $result = $sth->fetchrow_hashref();
+    return $result;
+}
+
+###############################################################################
+# GTFS
+###############################################################################
+
+use Archive::Zip qw( :ERROR_CODES :CONSTANTS );
+use Archive::Zip::MemberRead;
+
+use Digest::MD5 qw/md5_hex/;
+
+sub process_gtfs_feed {
+    my ($self, $geo_gtfs_agency_name, $request, $response) = @_;
+    my $url = $response->base;
+    my $cached = ($response->code == 304 || ($response->header("X-Cached") && $response->header("X-Content-Unchanged")));
+    my $cref = $response->content_ref;
+
+    my $retrieved     = $response->date;
+    my $last_modified = $response->last_modified;
+    my $content_length = $response->content_length;
+
+    my $md5 = md5_hex($url);
+
+    my $zip_filename     = sprintf("%s/data/%s/gtfs/%s-%s-%s-%s.zip", $self->{dir}, $geo_gtfs_agency_name, $md5, $retrieved, $last_modified, $content_length);
+    my $rel_zip_filename = sprintf(   "data/%s/gtfs/%s-%s-%s-%s.zip",               $geo_gtfs_agency_name, $md5, $retrieved, $last_modified, $content_length);
+    make_path(dirname($zip_filename));
+    if (open(my $fh, ">", $zip_filename)) {
+	binmode($fh);
+	print {$fh} $$cref;
+	close($fh);
+    } else {
+	die("Cannot write $zip_filename: $!\n");
+    }
+
+    my $zip = Archive::Zip->new();
+    unless ($zip->read($zip_filename) == AZ_OK) {
+	die("zip read error $zip_filename\n");
+    }
+    my @members = $zip->members();
+
+    my $geo_gtfs_agency_id =
+      $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my $geo_gtfs_feed_id =
+      $self->select_or_insert_geo_gtfs_feed_id($geo_gtfs_agency_id, $url);
+    my $geo_gtfs_feed_instance_id =
+      $self->select_or_insert_geo_gtfs_feed_instance_id($geo_gtfs_feed_id,
+							$rel_zip_filename,
+							$retrieved,
+							$last_modified);
+
+    my $sth;
+
+    my $save_select = select(STDERR);
+    my $save_flush  = $|;
+    $| = 1;
+
+    foreach my $member (@members) {
+	my $filename = $member->fileName();
+	my $basename = basename($filename, ".txt");
+	my $table_name = "gtfs_$basename";
+
+	$sth = $self->dbh->table_info(undef, "%", $table_name, "TABLE");
+	$sth->execute();
+	my $row = $sth->fetchrow_hashref();
+	if (!$row) {
+	    warn("No such table: $table_name\n");
+	    next;
+	}
+
+	my $fh = Archive::Zip::MemberRead->new($zip, $filename);
+
+	my $csv = Text::CSV->new ({ binary => 1 });
+	my $fields = $csv->getline($fh);
+	die("no fields in member $filename of $zip_filename\n")
+	  unless $fields or scalar(@$fields);
+
+	$self->dbh->do("delete from $table_name where geo_gtfs_feed_instance_id = ?",
+		       {}, $geo_gtfs_feed_instance_id);
+
+	my $sql = sprintf("insert into $table_name(geo_gtfs_feed_instance_id, %s) " .
+			    "values(?, %s);",
+			  join(", ", @$fields),
+			  join(", ", ("?") x scalar(@$fields)));
+	$sth = $self->dbh->prepare($sql);
+
+	print STDERR ("Populating $table_name ... ");
+
+	my $rows = 0;
+	while (defined(my $data = $csv->getline($fh))) {
+	    $sth->execute($geo_gtfs_feed_instance_id, @$data);
+	    $rows += 1;
+	}
+	print STDERR ("$rows rows inserted.\n");
+    }
+    $self->dbh->commit();
+
+    $| = $save_flush;
+    select($save_select);
+}
+
+sub update {
+    my ($self, $geo_gtfs_agency_name) = @_;
+    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+}
+
+sub list_routes {
+    my ($self, $geo_gtfs_agency_name) = @_;
+    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+}
+
+sub select_or_insert_geo_gtfs_feed_id {
+    my ($self, $geo_gtfs_agency_id, $url) = @_;
+    return $self->select_or_insert_id("table_name" => "geo_gtfs_feed",
+				      "id_name" => "id",
+				      "key_fields" => { "geo_gtfs_agency_id" => $geo_gtfs_agency_id,
+							"url"                => $url });
+}
+
+sub select_or_insert_geo_gtfs_feed_instance_id {
+    my ($self,
+	$geo_gtfs_feed_id,
+	$rel_filename,
+	$retrieved,
+	$last_modified,
+	$header_timestamp) = @_;
+
+    # NOTE: if last_modified is undefined, nothing gets replaced
+    # because anything = NULL returns false.
+    return $self->select_or_insert_id("table_name" => "geo_gtfs_feed_instance",
+				      "id_name" => "id",
+				      "key_fields" => { "geo_gtfs_feed_id" => $geo_gtfs_feed_id,
+							"last_modified"             => $last_modified },
+				      "more_fields" => { "filename"  => $rel_filename,
+							 "retrieved" => $retrieved },
+				      "before_insert" => { sql => "update geo_gtfs_feed_instance set is_latest = 0 " .
+							     "where geo_gtfs_feed_id = ?",
+							   bind_values => [$geo_gtfs_feed_id] },
+				     );
+}
+
+use vars qw(@GTFS_CALENDAR_WDAY_COLUMN);
+BEGIN {
+    @GTFS_CALENDAR_WDAY_COLUMN = qw(sunday monday tuesday wednesday thursday friday saturday);
+}
+
+sub get_geo_gtfs_feed_instance_id_and_service_id {
+    my ($self, $geo_gtfs_agency_id, $date) = @_;
+    
+    if ($date =~ m{^(\d{4})(\d{2})(\d{2})$}) {
+	$date = "$1-$2-$3";
+    }
+    my $time_t = str2time($date);
+    my @time_t = localtime($time_t);
+    my $yyyymmdd = strftime("%Y%m%d", @time_t);
+    my $wday = $time_t[6];	# sunday is zero
+    my $wday_column = $GTFS_CALENDAR_WDAY_COLUMN[$wday];
+
+    my $sql = <<"END";
+	select geo_gtfs_feed_instance_id, service_id
+	from gtfs_calendar c
+          join geo_gtfs_feed_instance i on c.geo_gtfs_feed_instance_id =
+                                           i.id
+          join geo_gtfs_feed f          on i.geo_gtfs_feed_id =
+                                           f.id
+        where $wday_column and ? between start_date and end_date
+          and geo_gtfs_agency_id = ?
+END
+    #print("$sql\n");
+    #printf("%s; %s\n", $yyyymmdd, $geo_gtfs_agency_id);
+    my $sth = $self->dbh->prepare($sql);
+    $sth->execute($yyyymmdd, $geo_gtfs_agency_id);
+    my @rows;
+    while (my $row = $sth->fetchrow_hashref()) {
+	push(@rows, $row);
+    }
+    $sth->finish();
+    if (scalar(@rows) < 0) {
+	die(sprintf("No GTFS feed data available on %s.",
+		    scalar(localtime(@time_t))));
+    }
+    if (scalar(@rows) > 1) {
+	die("UNEXPECTED ERROR TYPE 3.\n");
+    }
+    my $row = $rows[0];
+    return ($row->{geo_gtfs_feed_instance_id},
+	    $row->{service_id});
+}
+
+###############################################################################
+# DATABADASSERY
+###############################################################################
+
+sub dbh {
+    my ($self) = @_;
+    if ($self->{dbh}) {
+	return $self->{dbh};
+    }
+    my $dbfile = $self->{sqlite_filename};
+    make_path(dirname($dbfile));
+    $self->{dbh} = DBI->connect("dbi:SQLite:$dbfile", "", "",
+				{ RaiseError => 1, AutoCommit => 0 });
+    $self->create_tables();
+    return $self->{dbh};
 }
 
 sub select_or_insert_id {
@@ -564,135 +857,6 @@ sub select_or_insert_id {
     }
 }
 
-sub select_or_insert_geo_gtfs_agency_id {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    return $self->select_or_insert_id("table_name" => "geo_gtfs_agency",
-				      "id_name" => "id",
-				      "key_fields" => { "name" => $geo_gtfs_agency_name });
-}
-
-sub select_or_insert_geo_gtfs_realtime_feed_id {
-    my ($self, $geo_gtfs_agency_id, $url, $feed_type) = @_;
-    return $self->select_or_insert_id("table_name" => "geo_gtfs_realtime_feed",
-				      "id_name" => "id",
-				      "key_fields" => { "geo_gtfs_agency_id" => $geo_gtfs_agency_id,
-							"url"                => $url,
-							"feed_type"          => $feed_type });
-}
-
-sub select_or_insert_geo_gtfs_realtime_feed_instance_id {
-    my ($self,
-	$geo_gtfs_realtime_feed_id,
-	$rel_filename,
-	$retrieved,
-	$last_modified,
-	$header_timestamp) = @_;
-
-    # NOTE: if last_modified is undefined, nothing gets replaced
-    # because anything = NULL returns false.
-    return $self->select_or_insert_id("table_name" => "geo_gtfs_realtime_feed_instance",
-				      "id_name" => "id",
-				      "key_fields" => { "geo_gtfs_realtime_feed_id" => $geo_gtfs_realtime_feed_id,
-							"last_modified"             => $last_modified,
-							"header_timestamp"          => $header_timestamp },
-				      "more_fields" => { "filename"  => $rel_filename,
-							 "retrieved" => $retrieved },
-				      "before_insert" => { sql => "update geo_gtfs_realtime_feed_instance set is_latest = 0 " .
-							     "where geo_gtfs_realtime_feed_id = ?",
-							   bind_values => [$geo_gtfs_realtime_feed_id] },
-				     );
-}
-
-sub exec_sqlite_utility {
-    my ($self) = @_;
-    my $dbfile = $self->{sqlite_filename};
-    exec("sqlite3", $dbfile) or die("cannot exec sqlite: $!\n");
-}
-#------------------------------------------------------------------------------
-sub help_cmdline { print(<<"END"); }
-  gtfs2 ridetarc.org <URL> ...
-  gtfs2 ridetarc.org update [<URL> ...]
-  gtfs2 ridetarc.org update-realtime
-  gtfs2 ridetarc.org realtime-status
-  gtfs2 list-agencies
-  gtfs2 ridetarc.org list-routes
-END
-sub is_agency_name {
-    my ($self, $arg) = @_;
-    return $arg =~ m{^
-		     [A-Za-z0-9]+(-[A-Za-z0-9]+)*
-		     (\.[A-Za-z0-9]+(-[A-Za-z0-9]+)*)+
-		     $}xi
-		       && !$self->is_ipv4_address($arg);
-}
-use List::MoreUtils;
-sub is_ipv4_address {
-    my ($self, $arg) = @_;
-    return 0 unless $arg =~ m{^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$};
-    my @octet = ($1, $2, $3, $4);
-    return all { $_ >= 0 && $_ <= 255 } @octet;
-}
-sub is_url {
-    my ($self, $arg) = @_;
-    return $arg =~ m{^https?://}i;
-}
-sub run_cmdline {
-    my ($self, @args) = @_;
-    if (!@args) {
-	$self->help_cmdline();
-    } elsif ($self->is_agency_name($args[0])) {
-	my $geo_gtfs_agency_name = shift(@args);
-	if (!@args) {
-	    my ($geo_gtfs_agency_id, $status) = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-	    printf("%8d %-8s %s\n", $geo_gtfs_agency_id, $status, $geo_gtfs_agency_name);
-	} elsif ($self->is_url($args[0])) {
-	    foreach my $arg (@args) {
-		if ($self->is_url($arg)) {
-		    $self->process_url($geo_gtfs_agency_name, $arg);
-		} else {
-		    warn("Unknown argument: $arg\n");
-		}
-	    }
-	} elsif ($args[0] eq "update") {
-	    $self->update($geo_gtfs_agency_name);
-	} elsif ($args[0] eq "list-realtime-feeds") {
-	    $self->list_realtime_feeds($geo_gtfs_agency_name);
-	} elsif ($args[0] eq "update-realtime") {
-	    $self->update_realtime($geo_gtfs_agency_name);
-	} elsif ($args[0] eq "realtime-status") {
-	    $self->realtime_status($geo_gtfs_agency_name);
-	} elsif ($args[0] eq "list-routes") {
-	    $self->list_routes($geo_gtfs_agency_name);
-	} elsif ($args[0] eq "sqlite") {
-	    $self->exec_sqlite_utility();
-	}
-    } elsif ($args[0] eq "list-agencies") {
-	$self->list_agencies();
-    } elsif ($args[0] eq "help") {
-	$self->help_cmdline();
-    } elsif ($args[0] eq "sqlite") {
-	$self->exec_sqlite_utility();
-    } else {
-	die("Unknown command: $args[0]\n");
-    }
-}
-###############################################################################
-sub ua {
-    my ($self) = @_;
-    return $self->{ua} //= LWP::UserAgent->new();
-}
-sub dbh {
-    my ($self) = @_;
-    if ($self->{dbh}) {
-	return $self->{dbh};
-    }
-    my $dbfile = $self->{sqlite_filename};
-    make_path(dirname($dbfile));
-    $self->{dbh} = DBI->connect("dbi:SQLite:$dbfile", "", "",
-				{ RaiseError => 1, AutoCommit => 0 });
-    $self->create_tables();
-    return $self->{dbh};
-}
 sub drop_tables {
     my ($self) = @_;
     my $dbh = $self->{dbh};
@@ -719,6 +883,7 @@ drop table if exists gtfs_transfers;
 drop table if exists gtfs_feed_info;
 END
 }
+
 sub create_tables {
     my ($self) = @_;
     my $dbh = $self->{dbh};
@@ -741,7 +906,7 @@ create table if not exists
              geo_gtfs_feed (			id				integer				primary key autoincrement,
 						geo_gtfs_agency_id		integer		not null	references geo_gtfs_agency(id),
 						url				text		not null,
-						is_active			integer		not null	default 1	-- updated when feeds added, removed
+						is_active			integer		not null	default 1	-- updated when feeds added, removed, I guess.
 );
 create index if not exists  geo_gtfs_feed_01 on geo_gtfs_feed(is_active);
 
@@ -751,7 +916,7 @@ create table if not exists
 						filename			text		not null,
 						retrieved			integer		not null,
 						last_modified			integer		null,		-- SHOULD be specified, but some servers omit.
-						is_latest			integer		not null
+						is_latest			integer		not null	default 1
 );
 create index if not exists  geo_gtfs_feed_instance_01 on geo_gtfs_feed_instance(is_latest);
 
@@ -760,7 +925,7 @@ create table if not exists
 						geo_gtfs_agency_id		integer		not null	references geo_gtfs_agency(id),
 						url				text		not null,
 						feed_type			varchar(16)	not null,	-- 'updates', 'positions', 'alerts', 'all'
-						is_active			integer		not null default 1	-- updated when feeds added, removed
+						is_active			integer		not null	default 1	-- updated when feeds added, removed
 );
 create index if not exists  geo_gtfs_realtime_feed_01 on geo_gtfs_realtime_feed(feed_type);
 create index if not exists  geo_gtfs_realtime_feed_02 on geo_gtfs_realtime_feed(is_active);
@@ -772,7 +937,7 @@ create table if not exists
 						retrieved			integer		not null,
 						last_modified			integer		null,
 						header_timestamp		integer		null,
-						is_latest			integer		not null default 1
+						is_latest			integer		not null	default 1
 );
 create index if not exists  geo_gtfs_realtime_feed_instance_01 on geo_gtfs_realtime_feed_instance(is_latest);
 -------------------------------------------------------------------------------
@@ -858,9 +1023,10 @@ create table if not exists
 						drop_off_type			integer		null,
 						shape_dist_traveled		numeric		null
 );
-create unique index if not exists  gtfs_stop_times_01 on gtfs_stop_times (geo_gtfs_feed_instance_id, stop_id);
+create        index if not exists gtfs_stop_times_01 on gtfs_stop_times (geo_gtfs_feed_instance_id, stop_id);
 create        index if not exists gtfs_stop_times_02 on gtfs_stop_times (geo_gtfs_feed_instance_id, trip_id);
 create        index if not exists gtfs_stop_times_03 on gtfs_stop_times (geo_gtfs_feed_instance_id, stop_sequence);
+create unique index if not exists gtfs_stop_times_01 on gtfs_stop_times (geo_gtfs_feed_instance_id, trip_id, stop_id);
 
 create table if not exists
              gtfs_calendar (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
@@ -1008,5 +1174,141 @@ sub json {
     my ($self) = @_;
     return $self->{json} //= JSON->new()->allow_nonref()->pretty()->convert_blessed();
 }
+
+###############################################################################
+# AGENCIES
+###############################################################################
+
+sub list_agencies {
+    my ($self) = @_;
+    my $sth = $self->dbh->prepare("select * from geo_gtfs_agency");
+    $sth->execute();
+    print("id    name\n");
+    print("----  --------------------------------\n");
+    while (my $row = $sth->fetchrow_hashref()) {
+	printf("%4d  %s\n", $row->{id}, $row->{name});
+    }
+}
+
+sub select_or_insert_geo_gtfs_agency_id {
+    my ($self, $geo_gtfs_agency_name) = @_;
+    return $self->select_or_insert_id("table_name" => "geo_gtfs_agency",
+				      "id_name" => "id",
+				      "key_fields" => { "name" => $geo_gtfs_agency_name });
+}
+
+sub is_agency_name {
+    my ($self, $arg) = @_;
+    return $arg =~ m{^
+		     [A-Za-z0-9]+(-[A-Za-z0-9]+)*
+		     (\.[A-Za-z0-9]+(-[A-Za-z0-9]+)*)+
+		     $}xi
+		       && !$self->is_ipv4_address($arg);
+}
+
+###############################################################################
+# COMMAND LINE UTILITY FUNCTIONALITY
+###############################################################################
+
+sub help_cmdline { print(<<"END"); }
+  gtfs2 ridetarc.org <URL> ...
+  gtfs2 ridetarc.org update [<URL> ...]
+  gtfs2 ridetarc.org update-realtime
+  gtfs2 ridetarc.org realtime-status
+  gtfs2 list-agencies
+  gtfs2 ridetarc.org list-routes
+END
+
+sub run_cmdline {
+    my ($self, @args) = @_;
+    if (!@args) {
+	$self->help_cmdline();
+    } elsif ($self->is_agency_name($args[0])) {
+	my $geo_gtfs_agency_name = shift(@args);
+	if (!@args) {
+	    my ($geo_gtfs_agency_id, $status) = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+	    printf("%8d %-8s %s\n", $geo_gtfs_agency_id, $status, $geo_gtfs_agency_name);
+	} elsif ($self->is_url($args[0])) {
+	    foreach my $arg (@args) {
+		if ($self->is_url($arg)) {
+		    $self->process_url($geo_gtfs_agency_name, $arg);
+		} else {
+		    warn("Unknown argument: $arg\n");
+		}
+	    }
+	} elsif ($args[0] eq "update") {
+	    $self->update($geo_gtfs_agency_name);
+	} elsif ($args[0] eq "list-realtime-feeds") {
+	    $self->list_realtime_feeds($geo_gtfs_agency_name);
+	} elsif ($args[0] eq "update-realtime") {
+	    $self->update_realtime($geo_gtfs_agency_name);
+	} elsif ($args[0] eq "realtime-status") {
+	    $self->realtime_status($geo_gtfs_agency_name);
+	} elsif ($args[0] eq "list-routes") {
+	    $self->list_routes($geo_gtfs_agency_name);
+	} elsif ($args[0] eq "sqlite") {
+	    $self->exec_sqlite_utility();
+	}
+    } elsif ($args[0] eq "list-agencies") {
+	$self->list_agencies();
+    } elsif ($args[0] eq "help") {
+	$self->help_cmdline();
+    } elsif ($args[0] eq "sqlite") {
+	$self->exec_sqlite_utility();
+    } else {
+	die("Unknown command: $args[0]\n");
+    }
+}
+
+sub exec_sqlite_utility {
+    my ($self) = @_;
+    my $dbfile = $self->{sqlite_filename};
+    exec("sqlite3", $dbfile) or die("cannot exec sqlite: $!\n");
+}
+
+sub is_ipv4_address {
+    my ($self, $arg) = @_;
+    return 0 unless $arg =~ m{^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$};
+    my @octet = ($1, $2, $3, $4);
+    return all { $_ >= 0 && $_ <= 255 } @octet;
+}
+
+sub is_url {
+    my ($self, $arg) = @_;
+    return $arg =~ m{^https?://}i;
+}
+
+###############################################################################
+# WEBBERNETS
+###############################################################################
+
+BEGIN {
+    # in osx you may have to run: cpan Crypt::SSLeay and do other
+    # things
+    my ($uname) = uname();
+    if ($uname =~ m{^Darwin}) {
+	my $ca_file = "/usr/local/opt/curl-ca-bundle/share/ca-bundle.crt";
+	if (-e $ca_file) {
+	    $ENV{HTTPS_CA_FILE} = $ca_file;
+	} else {
+	    warn(<<"END");
+
+Looks like you are using a Mac.  You should run:
+    brew install curl-ca-bundle.
+You may also need to run:
+    sudo cpan Crypt::SSLeay
+
+END
+	    exit(1);
+	}
+    }
+}
+
+sub ua {
+    my ($self) = @_;
+    return $self->{ua} //= LWP::UserAgent->new();
+}
+
+###############################################################################
 
 1; # End of Geo::GTFS2
