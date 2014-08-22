@@ -10,22 +10,21 @@ BEGIN {
     # my fork adds a special feature called NoUpdateImpatient.
 }
 
-use POSIX qw(strftime floor uname);
-
-use LWP::UserAgent;
-use HTTP::Cache::Transparent;
+use DBI;
+use Data::Dumper;
+use File::Basename qw(dirname basename);
 use File::MMagic;		# best detects .zip files; allows us
                                 # to add magic for Google Protocol
                                 # Buffers files.
-use DBI;
 use File::Path qw(make_path);
-use File::Basename qw(dirname basename);
-use HTTP::Date;
-use Data::Dumper;
-use Google::ProtocolBuffers;
-use JSON qw(-convert_blessed_universally);
-use List::MoreUtils qw(all);
 use File::Spec;
+use Google::ProtocolBuffers;
+use HTTP::Cache::Transparent;
+use HTTP::Date qw(str2time);
+use JSON qw(-convert_blessed_universally);
+use LWP::UserAgent;
+use List::MoreUtils qw(all);
+use POSIX qw(strftime floor uname);
 use Text::CSV;
 
 use fields qw(dir
@@ -36,7 +35,8 @@ use fields qw(dir
 	      http_cache_dir
 	      gtfs_realtime_proto
 	      json
-	      gtfs_realtime_protocol_pulled);
+	      gtfs_realtime_protocol_pulled
+	      db);
 
 sub new {
     my ($class, %args) = @_;
@@ -45,15 +45,12 @@ sub new {
     return $self;
 }
 
-BEGIN {
-    if (!defined $ENV{HOME}) {
-	$ENV{HOME} = (getpwent())[7];
-    }
-}
-
 sub init {
     my ($self, %args) = @_;
-    my $dir = $self->{dir} = "$ENV{HOME}/.geo-gtfs2";
+
+    my $HOME = $ENV{HOME} // (getpwent())[7];
+    my $dir = $self->{dir} = "$HOME/.geo-gtfs2";
+
     $self->{http_cache_dir} = "$dir/http-cache";
     my $dbfile = $self->{sqlite_filename} = "$dir/google_transit.sqlite";
     while (my ($k, $v) = each(%args)) {
@@ -211,10 +208,10 @@ sub process_protocol_buffers {
 	warn("Done.\n");
     }
 
-    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my $geo_gtfs_realtime_feed_id = $self->select_or_insert_geo_gtfs_realtime_feed_id($geo_gtfs_agency_id, $url, $feed_type);
+    my $geo_gtfs_agency_id = $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my $geo_gtfs_realtime_feed_id = $self->db->select_or_insert_geo_gtfs_realtime_feed_id($geo_gtfs_agency_id, $url, $feed_type);
     my $geo_gtfs_realtime_feed_instance_id =
-      $self->select_or_insert_geo_gtfs_realtime_feed_instance_id($geo_gtfs_realtime_feed_id,
+      $self->db->select_or_insert_geo_gtfs_realtime_feed_instance_id($geo_gtfs_realtime_feed_id,
 								 $rel_pb_filename,
 								 $retrieved,
 								 $last_modified,
@@ -223,8 +220,8 @@ sub process_protocol_buffers {
 
 sub update_realtime {
     my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my @feeds = $self->get_geo_gtfs_realtime_feeds($geo_gtfs_agency_id);
+    my $geo_gtfs_agency_id = $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my @feeds = $self->db->get_geo_gtfs_realtime_feeds($geo_gtfs_agency_id);
     foreach my $feed (@feeds) {
 	my $url = $feed->{url};
 	$self->process_url($geo_gtfs_agency_name, $url);
@@ -233,8 +230,8 @@ sub update_realtime {
 
 sub list_latest_realtime_feeds {
     my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my @instances = $self->get_latest_geo_gtfs_realtime_feed_instances($geo_gtfs_agency_id);
+    my $geo_gtfs_agency_id = $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($geo_gtfs_agency_id);
     print("id      feed type  filename\n");
     print("------  ---------  -------------------------------------------------------------------------------\n");
     foreach my $i (@instances) {
@@ -244,10 +241,10 @@ sub list_latest_realtime_feeds {
 }
 
 sub realtime_status {
-    my ($self, $geo_gtfs_agency_name) = @_;
+    my ($self, $geo_gtfs_agency_name, %args) = @_;
     warn("Querying database for agency ID, feed instance ID...\n");
-    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my @instances = $self->get_latest_geo_gtfs_realtime_feed_instances($geo_gtfs_agency_id);
+    my $geo_gtfs_agency_id = $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($geo_gtfs_agency_id);
     warn("Done.\n");
     my %instances = map { ($_->{feed_type}, $_) } @instances;
 
@@ -306,7 +303,7 @@ sub realtime_status {
     print("veh.  lat.      lng.       route                                  time          stop                             dep/arr  dep/arr  delay\n");
     print("----- --------- ---------- ----- -------------------------------- --------      -------------------------------- -------- -------- -----\n");
 
-    my $get_info_line = sub {
+    my $sprintf_info_line = sub {
 	my ($info, $route, $trip) = @_;
 	return sprintf("%-5s %9.5f %10.5f %5s %-32.32s %-8s",
 		       $info->{label} // "-",
@@ -318,6 +315,16 @@ sub realtime_status {
 		      );
     };
 
+    my $sprintf_stuinfo_line = sub {
+	my ($stuinfo, $info, $route, $trip) = @_;
+	return sprintf("%3s %-32.32s %-8s %-8s %5d",
+		       $stuinfo->{is_coming_stop_time_update} ? "***" : "",
+		       $stuinfo->{stop_name} // "-",
+		       $stuinfo->{scheduled_departure_time} // $stuinfo->{scheduled_arrival_time} // "-",
+		       defined $stuinfo->{time} ? strftime("%H:%M:%S", localtime($stuinfo->{time})) : "-",
+		       int(($stuinfo->{delay} // 0) / 60 + 0.5));
+    };
+
     my @current = grep { $_->{old} == 0 } @info;
     my @dad     = grep { $_->{old} == 1 } @info;
     my @cooldad = grep { $_->{old} == 2 } @info;
@@ -325,27 +332,36 @@ sub realtime_status {
     foreach my $info (@current) {
 	my $route = $info->{route};
 	my $trip  = $info->{trip};
-	my $line = $get_info_line->($info, $route, $trip);
-
+	my $line = $sprintf_info_line->($info, $route, $trip);
+	
 	print($line);
-	my $first = 1;
-	foreach my $stuinfo (eval { @{$info->{stop_time_update}} }) {
-	    my $stuline = sprintf("%3s %-32.32s %-8s %-8s %5d",
-				  $stuinfo->{is_coming_stop_time_update} ? "***" : "",
-				  $stuinfo->{stop_name} // "-",
-				  $stuinfo->{scheduled_departure_time} // $stuinfo->{scheduled_arrival_time} // "-",
-				  defined $stuinfo->{time} ? strftime("%H:%M:%S", localtime($stuinfo->{time})) : "-",
-				  int(($stuinfo->{delay} // 0) / 60 + 0.5));
-	    if ($first) {
+
+	if ($args{summary}) {
+	    my $idx = $info->{coming_stop_time_update_index};
+	    my $stuinfo = (defined $info->{stop_time_update} && defined $idx) ? $info->{stop_time_update}->[$idx] : undef;
+	    if ($stuinfo) {
 		print("  ");
+		print $sprintf_stuinfo_line->($stuinfo, $info, $route, $trip);
 	    } else {
-		print(" " x (length($line) + 2));
+		goto full_stop_time_update_info;
 	    }
-	    print($stuline, "\n");
-	    $first = 0;
-	}
-	if (!$info->{stop_time_update} || !scalar(@{$info->{stop_time_update}})) {
 	    print("\n");
+	} else {
+	  full_stop_time_update_info:
+	    my $first = 1;
+	    foreach my $stuinfo (eval { @{$info->{stop_time_update}} }) {
+		if ($first) {
+		    print("  ");
+		} else {
+		    print(" " x (length($line) + 2));
+		}
+		print $sprintf_stuinfo_line->($stuinfo, $info, $route, $trip);
+		print "\n";
+		$first = 0;
+	    }
+	    if (!$info->{stop_time_update} || !scalar(@{$info->{stop_time_update}})) {
+		print("\n");
+	    }
 	}
     }
 }
@@ -435,15 +451,13 @@ sub get_useful_realtime_status_info {
 	    $stuinfo->{time}          = $departure_time  if defined $departure_time;
 	    $stuinfo->{delay}         = $departure_delay if defined $departure_delay;
 	    $stuinfo->{is_arrival}    = $is_arrival      if defined $is_arrival;
-
 	    my $notion_of_current_time = $info->{header_timestamp} // $info->{timestamp};
-	    
 	    if (scalar(keys(%$stuinfo))) {
 		push(@{$info->{stop_time_update}}, $stuinfo);
 		if (!defined $coming_stop_time_update_index) {
 		    if (defined $notion_of_current_time && defined $stuinfo->{time} &&
 			  $notion_of_current_time <= $stuinfo->{time}) {
-			$stuinfo->{coming_stop_time_update_index} = $coming_stop_time_update_index = $stu_idx;
+			$info->{coming_stop_time_update_index} = $coming_stop_time_update_index = $stu_idx;
 			$stuinfo->{is_coming_stop_time_update} = 1;
 		    }
 		}
@@ -469,12 +483,12 @@ sub get_useful_realtime_status_info {
 	}
 
 	my ($geo_gtfs_feed_instance_id, $service_id)
-	  = $self->get_geo_gtfs_feed_instance_id_and_service_id($geo_gtfs_agency_id, $info->{start_date});
+	  = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($geo_gtfs_agency_id, $info->{start_date});
 
 	$info->{geo_gtfs_feed_instance_id} = $geo_gtfs_feed_instance_id;
 	$info->{service_id}                = $service_id;
 	if (defined $info->{route_id}) {
-	    my $route = $info->{route} = $self->get_gtfs_route($geo_gtfs_feed_instance_id, $info->{route_id});
+	    my $route = $info->{route} = $self->db->get_gtfs_route($geo_gtfs_feed_instance_id, $info->{route_id});
 	    if (defined $route) {
 		$info->{route_short_name} = $route->{route_short_name};
 		$info->{route_long_name}  = $route->{route_long_name};
@@ -486,7 +500,7 @@ sub get_useful_realtime_status_info {
 	    }
 	}
 	if (defined $info->{trip_id}) {
-	    my $trip = $info->{trip} = $self->get_gtfs_trip($geo_gtfs_feed_instance_id, $info->{route_id}, $service_id, $info->{trip_id});
+	    my $trip = $info->{trip} = $self->db->get_gtfs_trip($geo_gtfs_feed_instance_id, $info->{route_id}, $service_id, $info->{trip_id});
 	    if (defined $trip) {
 		$info->{wheelchair_accessible} = $trip->{wheelchair_accessible};
 		$info->{trip_headsign}         = $trip->{trip_headsign};
@@ -502,7 +516,7 @@ sub get_useful_realtime_status_info {
 		my $stop_id = $stuinfo->{stop_id};
 		my $trip_id = $info->{trip_id};
 		if (defined $stop_id) {
-		    my $stop = $self->get_gtfs_stop($geo_gtfs_feed_instance_id, $stop_id);
+		    my $stop = $self->db->get_gtfs_stop($geo_gtfs_feed_instance_id, $stop_id);
 		    if ($stop) {
 			$stuinfo->{stop_code}		= $stop->{stop_code}		if defined $stop->{stop_code};
 			$stuinfo->{stop_name}		= $stop->{stop_name}		if defined $stop->{stop_name};
@@ -517,7 +531,7 @@ sub get_useful_realtime_status_info {
 			$stuinfo->{wheelchair_boarding}	= $stop->{wheelchair_boarding}	if defined $stop->{wheelchair_boarding};
 		    }
 		    if (defined $trip_id) {
-			my $stop_time = $self->get_gtfs_stop_time($geo_gtfs_feed_instance_id, $stop_id, $trip_id);
+			my $stop_time = $self->db->get_gtfs_stop_time($geo_gtfs_feed_instance_id, $stop_id, $trip_id);
 			if ($stop_time) {
 			    $stuinfo->{scheduled_arrival_time}   = $stop_time->{arrival_time}		if defined $stop_time->{arrival_time};
 			    $stuinfo->{scheduled_departure_time} = $stop_time->{departure_time}		if defined $stop_time->{departure_time};
@@ -578,125 +592,13 @@ sub read_realtime_feed {
 
 sub list_realtime_feeds {
     my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my @feeds = $self->get_geo_gtfs_realtime_feeds($geo_gtfs_agency_id);
+    my $geo_gtfs_agency_id = $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my @feeds = $self->db->get_geo_gtfs_realtime_feeds($geo_gtfs_agency_id);
     print("id    active?  feed type  url\n");
     print("----  -------  ---------  -------------------------------------------------------------------------------\n");
     foreach my $feed (@feeds) {
 	printf("%4d  %4d     %-9s  %s\n", @{$feed}{qw(id is_active feed_type url)});
     }
-}
-
-sub get_geo_gtfs_realtime_feeds {
-    my ($self, $geo_gtfs_agency_id) = @_;
-    my $sth = $self->dbh->prepare("select * from geo_gtfs_realtime_feed where geo_gtfs_agency_id = ?");
-    $sth->execute($geo_gtfs_agency_id);
-    my @rows;
-    while (my $row = $sth->fetchrow_hashref()) {
-	push(@rows, $row);
-    }
-    return @rows;
-}
-
-sub get_latest_geo_gtfs_realtime_feed_instances {
-    my ($self, $geo_gtfs_agency_id) = @_;
-    my $sql = <<"END";
-	select	i.*, f.feed_type
-	from	geo_gtfs_realtime_feed_instance i
-		join geo_gtfs_realtime_feed f on i.geo_gtfs_realtime_feed_id = f.id
-       		where f.geo_gtfs_agency_id = ? and i.is_latest
-END
-    my $sth = $self->dbh->prepare($sql);
-    $sth->execute($geo_gtfs_agency_id);
-    my @rows;
-    while (my $row = $sth->fetchrow_hashref()) {
-	push(@rows, $row);
-    }
-    return @rows;
-}
-
-sub select_or_insert_geo_gtfs_realtime_feed_id {
-    my ($self, $geo_gtfs_agency_id, $url, $feed_type) = @_;
-    return $self->select_or_insert_id("table_name" => "geo_gtfs_realtime_feed",
-				      "id_name" => "id",
-				      "key_fields" => { "geo_gtfs_agency_id" => $geo_gtfs_agency_id,
-							"url"                => $url,
-							"feed_type"          => $feed_type });
-}
-
-sub select_or_insert_geo_gtfs_realtime_feed_instance_id {
-    my ($self,
-	$geo_gtfs_realtime_feed_id,
-	$rel_filename,
-	$retrieved,
-	$last_modified,
-	$header_timestamp) = @_;
-
-    # NOTE: if last_modified is undefined, nothing gets replaced
-    # because anything = NULL returns false.
-    return $self->select_or_insert_id("table_name" => "geo_gtfs_realtime_feed_instance",
-				      "id_name" => "id",
-				      "key_fields" => { "geo_gtfs_realtime_feed_id" => $geo_gtfs_realtime_feed_id,
-							"last_modified"             => $last_modified,
-							"header_timestamp"          => $header_timestamp },
-				      "more_fields" => { "filename"  => $rel_filename,
-							 "retrieved" => $retrieved },
-				      "before_insert" => { sql => "update geo_gtfs_realtime_feed_instance set is_latest = 0 " .
-							     "where geo_gtfs_realtime_feed_id = ?",
-							   bind_values => [$geo_gtfs_realtime_feed_id] },
-				     );
-}
-
-sub get_gtfs_route {
-    my ($self, $geo_gtfs_feed_instance_id, $route_id) = @_;
-    my $sql = <<"END";
-	select *
-	from gtfs_routes
-	where geo_gtfs_feed_instance_id = ? and route_id = ?
-END
-    my $sth = $self->dbh->prepare($sql);
-    $sth->execute($geo_gtfs_feed_instance_id, $route_id);
-    my $result = $sth->fetchrow_hashref();
-    return $result;
-}
-
-sub get_gtfs_trip {
-    my ($self, $geo_gtfs_feed_instance_id, $route_id, $service_id, $trip_id) = @_;
-    my $sql = <<"END";
-	select *
-	from gtfs_trips
-	where geo_gtfs_feed_instance_id = ? and route_id = ? and service_id = ? and trip_id = ?
-END
-    my $sth = $self->dbh->prepare($sql);
-    $sth->execute($geo_gtfs_feed_instance_id, $route_id, $service_id, $trip_id);
-    my $result = $sth->fetchrow_hashref();
-    return $result;
-}
-
-sub get_gtfs_stop {
-    my ($self, $geo_gtfs_feed_instance_id, $stop_id) = @_;
-    my $sql = <<"END";
-	select *
-	from gtfs_stops
-	where geo_gtfs_feed_instance_id = ? and stop_id = ?
-END
-    my $sth = $self->dbh->prepare($sql);
-    $sth->execute($geo_gtfs_feed_instance_id, $stop_id);
-    my $result = $sth->fetchrow_hashref();
-    return $result;
-}
-
-sub get_gtfs_stop_time {
-    my ($self, $geo_gtfs_feed_instance_id, $stop_id, $trip_id) = @_;
-    my $sql = <<"END";
-	select *
-	from gtfs_stop_times
-	where geo_gtfs_feed_instance_id = ? and stop_id = ? and trip_id = ?
-END
-    my $sth = $self->dbh->prepare($sql);
-    $sth->execute($geo_gtfs_feed_instance_id, $stop_id, $trip_id);
-    my $result = $sth->fetchrow_hashref();
-    return $result;
 }
 
 ###############################################################################
@@ -738,11 +640,11 @@ sub process_gtfs_feed {
     my @members = $zip->members();
 
     my $geo_gtfs_agency_id =
-      $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+      $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
     my $geo_gtfs_feed_id =
-      $self->select_or_insert_geo_gtfs_feed_id($geo_gtfs_agency_id, $url);
+      $self->db->select_or_insert_geo_gtfs_feed_id($geo_gtfs_agency_id, $url);
     my $geo_gtfs_feed_instance_id =
-      $self->select_or_insert_geo_gtfs_feed_instance_id($geo_gtfs_feed_id,
+      $self->db->select_or_insert_geo_gtfs_feed_instance_id($geo_gtfs_feed_id,
 							$rel_zip_filename,
 							$retrieved,
 							$last_modified);
@@ -799,479 +701,12 @@ sub process_gtfs_feed {
 
 sub update {
     my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my $geo_gtfs_agency_id = $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
 }
 
 sub list_routes {
     my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-}
-
-sub select_or_insert_geo_gtfs_feed_id {
-    my ($self, $geo_gtfs_agency_id, $url) = @_;
-    return $self->select_or_insert_id("table_name" => "geo_gtfs_feed",
-				      "id_name" => "id",
-				      "key_fields" => { "geo_gtfs_agency_id" => $geo_gtfs_agency_id,
-							"url"                => $url });
-}
-
-sub select_or_insert_geo_gtfs_feed_instance_id {
-    my ($self,
-	$geo_gtfs_feed_id,
-	$rel_filename,
-	$retrieved,
-	$last_modified,
-	$header_timestamp) = @_;
-
-    # NOTE: if last_modified is undefined, nothing gets replaced
-    # because anything = NULL returns false.
-    return $self->select_or_insert_id("table_name" => "geo_gtfs_feed_instance",
-				      "id_name" => "id",
-				      "key_fields" => { "geo_gtfs_feed_id" => $geo_gtfs_feed_id,
-							"last_modified"             => $last_modified },
-				      "more_fields" => { "filename"  => $rel_filename,
-							 "retrieved" => $retrieved },
-				      "before_insert" => { sql => "update geo_gtfs_feed_instance set is_latest = 0 " .
-							     "where geo_gtfs_feed_id = ?",
-							   bind_values => [$geo_gtfs_feed_id] },
-				     );
-}
-
-use vars qw(@GTFS_CALENDAR_WDAY_COLUMN);
-BEGIN {
-    @GTFS_CALENDAR_WDAY_COLUMN = qw(sunday monday tuesday wednesday thursday friday saturday);
-}
-
-sub get_geo_gtfs_feed_instance_id_and_service_id {
-    my ($self, $geo_gtfs_agency_id, $date) = @_;
-    
-    if ($date =~ m{^(\d{4})(\d{2})(\d{2})$}) {
-	$date = "$1-$2-$3";
-    }
-    my $time_t = str2time($date);
-    my @time_t = localtime($time_t);
-    my $yyyymmdd = strftime("%Y%m%d", @time_t);
-    my $wday = $time_t[6];	# sunday is zero
-    my $wday_column = $GTFS_CALENDAR_WDAY_COLUMN[$wday];
-
-    my $sql = <<"END";
-	select geo_gtfs_feed_instance_id, service_id
-	from gtfs_calendar c
-          join geo_gtfs_feed_instance i on c.geo_gtfs_feed_instance_id =
-                                           i.id
-          join geo_gtfs_feed f          on i.geo_gtfs_feed_id =
-                                           f.id
-        where $wday_column and ? between start_date and end_date
-          and geo_gtfs_agency_id = ?
-END
-    #print("$sql\n");
-    #printf("%s; %s\n", $yyyymmdd, $geo_gtfs_agency_id);
-    my $sth = $self->dbh->prepare($sql);
-    $sth->execute($yyyymmdd, $geo_gtfs_agency_id);
-    my @rows;
-    while (my $row = $sth->fetchrow_hashref()) {
-	push(@rows, $row);
-    }
-    $sth->finish();
-    if (scalar(@rows) < 0) {
-	die(sprintf("No GTFS feed data available on %s.",
-		    scalar(localtime(@time_t))));
-    }
-    if (scalar(@rows) > 1) {
-	die("UNEXPECTED ERROR TYPE 3.\n");
-    }
-    my $row = $rows[0];
-    return ($row->{geo_gtfs_feed_instance_id},
-	    $row->{service_id});
-}
-
-###############################################################################
-# DATABADASSERY
-###############################################################################
-
-sub dbh {
-    my ($self) = @_;
-    if ($self->{dbh}) {
-	return $self->{dbh};
-    }
-    my $dbfile = $self->{sqlite_filename};
-    make_path(dirname($dbfile));
-    $self->{dbh} = DBI->connect("dbi:SQLite:$dbfile", "", "",
-				{ RaiseError => 1, AutoCommit => 0 });
-    $self->create_tables();
-    return $self->{dbh};
-}
-
-sub select_or_insert_id {
-    my ($self, %args) = @_;
-    my $table_name = $args{table_name};
-    my $id_name = $args{id_name};
-
-    my %key_fields  = eval { %{$args{key_fields}} };
-    my @key_names   = keys(%key_fields);
-    my @key_values  = map { $key_fields{$_} } @key_names;
-    my $key_where   = join(" and ", map { "($_ = ?)" } @key_names);
-
-    my $sth;
-    my $sql;
-
-    $sql = "select $id_name from $table_name where $key_where";
-    $sth = $self->dbh->prepare($sql);
-    $sth->execute(@key_values);
-    my ($id) = $sth->fetchrow_array();
-    $sth->finish();
-    if (defined $id) {
-	$self->dbh->rollback();
-	return $id;
-    }
-
-    if ($args{before_insert}) {
-	my $sql = $args{before_insert}{sql};
-	my @bind_values = eval { @{$args{before_insert}{bind_values}} };
-	$sth = $self->dbh->prepare($sql);
-	$sth->execute(@bind_values);
-	$sth->finish();
-    }
-
-    my %more_fields  = eval { %{$args{more_fields}} };
-    my %insert_fields = (%key_fields, %more_fields);
-    my @insert_names  = keys(%insert_fields);
-    my @insert_values = map { $insert_fields{$_} } @insert_names;
-
-    my $insert_field_names  = join(", ", @insert_names);
-    my $insert_placeholders = join(", ", ("?") x scalar(@insert_names));
-
-    $sql = "insert into $table_name($insert_field_names) values($insert_placeholders)";
-    $sth = $self->dbh->prepare($sql);
-    $sth->execute(@insert_values);
-    $sth->finish();
-
-    $id = $self->dbh->last_insert_id("", "", "", "");
-
-    $self->dbh->commit();
-
-    if (defined $id) {
-	$self->dbh->rollback();
-	return $id;
-    }
-}
-
-sub drop_tables {
-    my ($self) = @_;
-    my $dbh = $self->{dbh};
-    print STDERR ("Dropping database tables...\n");
-    $self->dbh->do(<<"END");
-drop table if exists geo_gtfs;
-drop table if exists geo_gtfs_agency;
-drop table if exists geo_gtfs_feed;
-drop table if exists geo_gtfs_feed_instance;
-drop table if exists geo_gtfs_realtime_feed;
-drop table if exists geo_gtfs_realtime_feed_instance;
-drop table if exists gtfs_agency;
-drop table if exists gtfs_stops;
-drop table if exists gtfs_routes;
-drop table if exists gtfs_trips;
-drop table if exists gtfs_stop_times;
-drop table if exists gtfs_calendar;
-drop table if exists gtfs_calendar_dates;
-drop table if exists gtfs_fare_attributes;
-drop table if exists gtfs_fare_rules;
-drop table if exists gtfs_shapes;
-drop table if exists gtfs_frequencies;
-drop table if exists gtfs_transfers;
-drop table if exists gtfs_feed_info;
-END
-}
-
-sub create_tables {
-    my ($self) = @_;
-    my $dbh = $self->{dbh};
-
-    my $sql = <<"END";
-create table if not exists
-             geo_gtfs (				name				varchar(32)	not null	primary key,
-						value				text		null
-);
-delete from geo_gtfs where name = 'geo_gtfs.db.version';
-insert into geo_gtfs (name, value) values('geo_gtfs.db.version', '0.1');
-
-create table if not exists
-             geo_gtfs_agency (			id				integer				primary key autoincrement,
-						name				varchar(64)	not null	-- preferably the transit agency's domain name, without a www. prefix. - examples: 'ridetarc.org', 'ttc.ca'
-);
-create index if not exists  geo_gtfs_agency_01 on geo_gtfs_agency(name);
-
-create table if not exists
-             geo_gtfs_feed (			id				integer				primary key autoincrement,
-						geo_gtfs_agency_id		integer		not null	references geo_gtfs_agency(id),
-						url				text		not null,
-						is_active			integer		not null	default 1	-- updated when feeds added, removed, I guess.
-);
-create index if not exists  geo_gtfs_feed_01 on geo_gtfs_feed(is_active);
-
-create table if not exists
-             geo_gtfs_feed_instance (		id				integer				primary key autoincrement,
-						geo_gtfs_feed_id		integer		not null	references geo_gtfs_feed(id),
-						filename			text		not null,
-						retrieved			integer		not null,
-						last_modified			integer		null,		-- SHOULD be specified, but some servers omit.
-						is_latest			integer		not null	default 1
-);
-create index if not exists  geo_gtfs_feed_instance_01 on geo_gtfs_feed_instance(is_latest);
-
-create table if not exists
-             geo_gtfs_realtime_feed (		id				integer				primary key,
-						geo_gtfs_agency_id		integer		not null	references geo_gtfs_agency(id),
-						url				text		not null,
-						feed_type			varchar(16)	not null,	-- 'updates', 'positions', 'alerts', 'all'
-						is_active			integer		not null	default 1	-- updated when feeds added, removed
-);
-create index if not exists  geo_gtfs_realtime_feed_01 on geo_gtfs_realtime_feed(feed_type);
-create index if not exists  geo_gtfs_realtime_feed_02 on geo_gtfs_realtime_feed(is_active);
-
-create table if not exists
-             geo_gtfs_realtime_feed_instance (	id				integer				primary key,
-						geo_gtfs_realtime_feed_id	integer		not null	references geo_gtfs_realtime_feed(id),
-						filename			text		not null,
-						retrieved			integer		not null,
-						last_modified			integer		null,
-						header_timestamp		integer		null,
-						is_latest			integer		not null	default 1
-);
-create index if not exists  geo_gtfs_realtime_feed_instance_01 on geo_gtfs_realtime_feed_instance(is_latest);
--------------------------------------------------------------------------------
-create table if not exists
-             gtfs_agency (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						agency_id			text		null,		-- indexed -- for feeds containing only one agency, this can be NULL.
-						agency_name			text		not null,
-						agency_url			text		not null,
-						agency_timezone			text		not null,
-						agency_lang			varchar(2)	null,
-						agency_phone			text		null,
-						agency_fare_url			text		null
-);
-create unique index if not exists  gtfs_agency_01 on gtfs_agency(geo_gtfs_feed_instance_id, agency_id);
-
-create table if not exists
-             gtfs_stops (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						stop_id				text		not null,	-- indexed --
-						stop_code			text		null,
-						stop_name			text		not null,
-						stop_desc			text		null,
-						stop_lat			numeric		not null,
-						stop_lon			numeric		not null,
-						zone_id				text		null,		-- indexed --
-						stop_url			text		null,
-						location_type			integer		null,
-						parent_station			text		null,
-						stop_timezone			text		null,
-						wheelchair_boarding		integer		null
-);
-create unique index if not exists  gtfs_stops_01 on gtfs_stops(geo_gtfs_feed_instance_id, stop_id);
-create        index if not exists gtfs_stops_02 on gtfs_stops(geo_gtfs_feed_instance_id, zone_id);
-create        index if not exists gtfs_stops_03 on gtfs_stops(geo_gtfs_feed_instance_id, location_type);
-create        index if not exists gtfs_stops_04 on gtfs_stops(geo_gtfs_feed_instance_id, parent_station);
-create        index if not exists gtfs_stops_05 on gtfs_stops(geo_gtfs_feed_instance_id, wheelchair_boarding);
-
-create table if not exists
-             gtfs_routes (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						route_id			text		not null,	-- indexed --
-						agency_id			text		null		references gtfs_agency(id),
-						route_short_name		text		not null,
-						route_long_name			text		not null,
-						route_desc			text		null,
-						route_type			integer		not null,
-						route_url			text		null,
-						route_color			varchar(6)	null,
-						route_text_color		varchar(6)	null
-);
-create unique index if not exists  gtfs_routes_01 on gtfs_routes (geo_gtfs_feed_instance_id, route_id, agency_id);
-create        index if not exists gtfs_routes_02 on gtfs_routes (geo_gtfs_feed_instance_id, agency_id);
-create        index if not exists gtfs_routes_03 on gtfs_routes (geo_gtfs_feed_instance_id, route_id);
-create        index if not exists gtfs_routes_04 on gtfs_routes (geo_gtfs_feed_instance_id, route_type);
-
-create table if not exists
-             gtfs_trips (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						route_id			text		not null	references gtfs_routes(id),
-						service_id			text		not null,	-- indexed --
-						trip_id				text		not null,	-- indexed --
-						trip_headsign			text		null,
-						trip_short_name			text		null,
-						direction_id			integer		null,		-- indexed --
-						block_id			text		null,		-- indexed --
-						shape_id			text		null		references gtfs_shapes(id),
-						wheelchair_accessible		integer		null,
-						bikes_allowed			integer		null
-);
-create unique index if not exists  gtfs_trips_01 on gtfs_trips (geo_gtfs_feed_instance_id, trip_id);
-create        index if not exists gtfs_trips_02 on gtfs_trips (geo_gtfs_feed_instance_id, route_id);
-create        index if not exists gtfs_trips_03 on gtfs_trips (geo_gtfs_feed_instance_id, service_id);
-create        index if not exists gtfs_trips_04 on gtfs_trips (geo_gtfs_feed_instance_id, direction_id);
-create        index if not exists gtfs_trips_05 on gtfs_trips (geo_gtfs_feed_instance_id, block_id);
-create        index if not exists gtfs_trips_06 on gtfs_trips (geo_gtfs_feed_instance_id, shape_id);
-
-create table if not exists
-             gtfs_stop_times (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						trip_id				text		not null	references gtfs_trips(id),
-						arrival_time			varchar(8)	not null,
-						departure_time			varchar(8)	not null,
-						stop_id				text		not null	references gtfs_stops(id),
-						stop_sequence			integer		not null,
-						stop_headsign			text		null,
-						pickup_type			integer		null,
-						drop_off_type			integer		null,
-						shape_dist_traveled		numeric		null
-);
-create        index if not exists gtfs_stop_times_01 on gtfs_stop_times (geo_gtfs_feed_instance_id, stop_id);
-create        index if not exists gtfs_stop_times_02 on gtfs_stop_times (geo_gtfs_feed_instance_id, trip_id);
-create        index if not exists gtfs_stop_times_03 on gtfs_stop_times (geo_gtfs_feed_instance_id, stop_sequence);
-create unique index if not exists gtfs_stop_times_01 on gtfs_stop_times (geo_gtfs_feed_instance_id, trip_id, stop_id);
-
-create table if not exists
-             gtfs_calendar (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						service_id			text		not null,	-- indexed --
-						monday				integer		not null,
-						tuesday				integer		not null,
-						wednesday			integer		not null,
-						thursday			integer		not null,
-						friday				integer		not null,
-						saturday			integer		not null,
-						sunday				integer		not null,
-						start_date			varchar(8)	not null,
-						end_date			varchar(8)	not null
-);
-create        index if not exists gtfs_calendar_01 on gtfs_calendar(geo_gtfs_feed_instance_id, service_id);
-create        index if not exists gtfs_calendar_02 on gtfs_calendar(geo_gtfs_feed_instance_id, monday);
-create        index if not exists gtfs_calendar_03 on gtfs_calendar(geo_gtfs_feed_instance_id, tuesday);
-create        index if not exists gtfs_calendar_04 on gtfs_calendar(geo_gtfs_feed_instance_id, wednesday);
-create        index if not exists gtfs_calendar_05 on gtfs_calendar(geo_gtfs_feed_instance_id, thursday);
-create        index if not exists gtfs_calendar_06 on gtfs_calendar(geo_gtfs_feed_instance_id, friday);
-create        index if not exists gtfs_calendar_07 on gtfs_calendar(geo_gtfs_feed_instance_id, saturday);
-create        index if not exists gtfs_calendar_08 on gtfs_calendar(geo_gtfs_feed_instance_id, sunday);
-create        index if not exists gtfs_calendar_09 on gtfs_calendar(geo_gtfs_feed_instance_id, start_date);
-create        index if not exists gtfs_calendar_10 on gtfs_calendar(geo_gtfs_feed_instance_id, end_date);
-
-create table if not exists
-             gtfs_calendar_dates (		geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						service_id			text		not null,	-- indexed --
-						`date`				varchar(8)	not null,
-						exception_type			integer		not null
-);
-create        index if not exists gtfs_calendar_dates_01 on gtfs_calendar_dates(geo_gtfs_feed_instance_id, service_id);
-create        index if not exists gtfs_calendar_dates_02 on gtfs_calendar_dates(geo_gtfs_feed_instance_id, `date`);
-create        index if not exists gtfs_calendar_dates_03 on gtfs_calendar_dates(geo_gtfs_feed_instance_id, exception_type);
-
-create table if not exists
-             gtfs_fare_attributes (		geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						fare_id				text		not null,	-- indexed --
-						price				numeric		not null,
-						currency_type			text		not null,
-						payment_method			integer		not null,
-						transfers			integer		not null,
-						transfer_duration		integer		null
-);
-create        index if not exists gtfs_fare_attributes_01 on gtfs_fare_attributes(geo_gtfs_feed_instance_id, fare_id);
-
-create table if not exists
-             gtfs_fare_rules (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						fare_id				text		not null	references gtfs_fare_attributes(fare_id),
-						route_id			text		null		references gtfs_routes(id),
-						origin_id			text		null,		-- indexed --
-						destination_id			text		null,		-- indexed --
-						contains_id			text		null		-- indexed --
-);
-create        index if not exists gtfs_fare_rules_01 on gtfs_fare_rules(geo_gtfs_feed_instance_id, fare_id);
-create        index if not exists gtfs_fare_rules_02 on gtfs_fare_rules(geo_gtfs_feed_instance_id, route_id);
-create        index if not exists gtfs_fare_rules_03 on gtfs_fare_rules(geo_gtfs_feed_instance_id, origin_id);
-create        index if not exists gtfs_fare_rules_04 on gtfs_fare_rules(geo_gtfs_feed_instance_id, destination_id);
-create        index if not exists gtfs_fare_rules_05 on gtfs_fare_rules(geo_gtfs_feed_instance_id, contains_id);
-
-create table if not exists
-             gtfs_shapes (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						shape_id			text		not null,	-- indexed --
-						shape_pt_lat			numeric		not null,
-						shape_pt_lon			numeric		not null,
-						shape_pt_sequence		integer		not null,	-- indexed --
-						shape_dist_traveled		numeric		null
-);
-create        index if not exists gtfs_shapes_01 on gtfs_shapes(geo_gtfs_feed_instance_id, shape_id);
-create        index if not exists gtfs_shapes_02 on gtfs_shapes(geo_gtfs_feed_instance_id, shape_id, shape_pt_sequence);
-
-create table if not exists
-             gtfs_frequencies (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						trip_id				text		null		references gtfs_trips(id),
-						start_time			varchar(8)	null, --indexed
-						end_time			varchar(8)	null, --indexed
-						headway_secs			integer		null,
-						exact_times			integer		null
-);
-create        index if not exists gtfs_frequencies_01 on gtfs_frequencies(geo_gtfs_feed_instance_id, trip_id);
-create        index if not exists gtfs_frequencies_02 on gtfs_frequencies(geo_gtfs_feed_instance_id, start_time);
-create        index if not exists gtfs_frequencies_03 on gtfs_frequencies(geo_gtfs_feed_instance_id, end_time);
-
-create table if not exists
-             gtfs_transfers (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						from_stop_id			text		not null	references gtfs_stops(id),
-						to_stop_id			text		not null	references gtfs_stops(id),
-						transfer_type			integer		not null,
-						min_transfer_time		integer		null
-);
-create        index if not exists gtfs_transfers_01 on gtfs_transfers(from_stop_id);
-create        index if not exists gtfs_transfers_02 on gtfs_transfers(to_stop_id);
-
-create table if not exists
-             gtfs_feed_info (			geo_gtfs_feed_instance_id	integer		not null	references geo_gtfs_feed(id),
-						feed_publisher_name		text		not null,
-						feed_publisher_url		text		not null,
-						feed_lang			text		not null,
-						feed_start_date			varchar(8)	null,
-						feed_end_date			varchar(8)	null,
-						feed_version			text		null
-);
-
-create index if not exists  geo_gtfs_agency_00			on gtfs_agency		(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_stops_00			on gtfs_stops		(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_routes_00			on gtfs_routes		(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_trips_00			on gtfs_trips		(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_stop_times_00		on gtfs_stop_times	(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_calendar_00		on gtfs_calendar	(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_calendar_dates_00		on gtfs_calendar_dates	(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_fare_attributes_00	on gtfs_fare_attributes	(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_fare_rules_00		on gtfs_fare_rules	(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_shapes_00			on gtfs_shapes		(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_frequencies_00		on gtfs_frequencies	(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_transfers_00		on gtfs_transfers	(geo_gtfs_feed_instance_id);
-create index if not exists  geo_gtfs_feed_info_00		on gtfs_feed_info	(geo_gtfs_feed_instance_id);
-END
-    $sql =~ s{--.*?$}{}gsm;
-    my @sql = split(qr{;$}m, $sql);
-    foreach my $sql (@sql) {
-	next unless $sql =~ m{\S};
-	my $short = $sql;
-	$short =~ s{\s+}{ }gsm;
-	$short =~ s{\(.*}{};
-	eval { $dbh->do($sql); };
-	if ($@) {
-	    my $error = $@;
-	    print($sql);
-	    die($error);
-	}
-    }
-    $self->dbh->commit();
-}
-
-sub DESTROY {
-    my ($self) = @_;
-    my $dbh = $self->{dbh};
-    if ($dbh) {
-	$dbh->rollback();
-    }
-    # STFU: Issuing rollback() due to DESTROY without explicit disconnect() of DBD::SQLite::db handle /Users/dse/.geo-gtfs2/google_transit.sqlite.
-}
-
-sub json {
-    my ($self) = @_;
-    return $self->{json} //= JSON->new()->allow_nonref()->pretty()->convert_blessed();
+    my $geo_gtfs_agency_id = $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
 }
 
 ###############################################################################
@@ -1287,13 +722,6 @@ sub list_agencies {
     while (my $row = $sth->fetchrow_hashref()) {
 	printf("%4d  %s\n", $row->{id}, $row->{name});
     }
-}
-
-sub select_or_insert_geo_gtfs_agency_id {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    return $self->select_or_insert_id("table_name" => "geo_gtfs_agency",
-				      "id_name" => "id",
-				      "key_fields" => { "name" => $geo_gtfs_agency_name });
 }
 
 sub is_agency_name {
@@ -1325,7 +753,7 @@ sub run_cmdline {
     } elsif ($self->is_agency_name($args[0])) {
 	my $geo_gtfs_agency_name = shift(@args);
 	if (!@args) {
-	    my ($geo_gtfs_agency_id, $status) = $self->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+	    my ($geo_gtfs_agency_id, $status) = $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
 	    printf("%8d %-8s %s\n", $geo_gtfs_agency_id, $status, $geo_gtfs_agency_name);
 	} elsif ($self->is_url($args[0])) {
 	    foreach my $arg (@args) {
@@ -1343,6 +771,8 @@ sub run_cmdline {
 	    $self->update_realtime($geo_gtfs_agency_name);
 	} elsif ($args[0] eq "realtime-status") {
 	    $self->realtime_status($geo_gtfs_agency_name);
+	} elsif ($args[0] eq "realtime-summary") {
+	    $self->realtime_status($geo_gtfs_agency_name, summary => 1);
 	} elsif ($args[0] eq "list-routes") {
 	    $self->list_routes($geo_gtfs_agency_name);
 	} elsif ($args[0] eq "sqlite") {
@@ -1406,6 +836,32 @@ END
 sub ua {
     my ($self) = @_;
     return $self->{ua} //= LWP::UserAgent->new();
+}
+
+###############################################################################
+# GENERIC UTILITY
+###############################################################################
+
+sub json {
+    my ($self) = @_;
+    return $self->{json} //= JSON->new()->allow_nonref()->pretty()->convert_blessed();
+}
+
+###############################################################################
+# DB WRAPPER
+###############################################################################
+
+use Geo::GTFS2::DB;
+
+sub dbh {
+    my ($self) = @_;
+    return $self->db->dbh;
+}
+
+sub db {
+    my ($self) = @_;
+    return $self->{db} if $self->{db};
+    return $self->{db} = Geo::GTFS2::DB->new();
 }
 
 ###############################################################################
