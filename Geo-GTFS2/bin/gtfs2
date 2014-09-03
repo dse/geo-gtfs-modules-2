@@ -5,7 +5,7 @@ use strict;
 use FindBin;
 use lib "$FindBin::Bin/../lib";
 
-use Geo::GTFS2;
+use Geo::GTFS2::CommandLine;
 
-my $gtfs2 = Geo::GTFS2->new();
-$gtfs2->run_cmdline(@ARGV);
+my $cl = Geo::GTFS2::CommandLine->new();
+$cl->run(@ARGV);
