@@ -22,14 +22,23 @@ sub new {
 sub init {
     my ($self, %args) = @_;
 
-    my $HOME = $ENV{HOME} // (getpwent())[7];
-    my $dir = $self->{dir} = "$HOME/.geo-gtfs2";
-
-    my $dbfile = $self->{sqlite_filename} = "$dir/google_transit.sqlite";
-
+    my @pwent = getpwuid($>);
+    
     while (my ($k, $v) = each(%args)) {
 	$self->{$k} = $v;
     }
+
+    my $dir;
+
+    my $username = $pwent[0];
+    if ($username eq "_www") { # special os x user
+	$dir = $self->{dir} //= "/Users/_www/.geo-gtfs2";
+    } else {
+	my $HOME = $ENV{HOME} // $pwent[7];
+	$dir = $self->{dir} //= "$HOME/.geo-gtfs2";
+    }
+
+    my $dbfile = $self->{sqlite_filename} //= "$dir/google_transit.sqlite";
 }
 
 sub dbh {
@@ -396,7 +405,6 @@ END
 	eval { $dbh->do($sql); };
 	if ($@) {
 	    my $error = $@;
-	    print($sql);
 	    die($error);
 	}
     }
@@ -485,16 +493,28 @@ END
 }
 
 sub get_gtfs_trip {
-    my ($self, $geo_gtfs_feed_instance_id, $route_id, $service_id, $trip_id) = @_;
-    my $sql = <<"END";
-	select *
-	from gtfs_trips
-	where geo_gtfs_feed_instance_id = ? and route_id = ? and service_id = ? and trip_id = ?
+    my ($self, $geo_gtfs_feed_instance_id, $trip_id, $route_id, $service_id) = @_;
+    if (defined $route_id && defined $service_id) {
+	my $sql = <<"END";
+		select *
+		from gtfs_trips
+		where geo_gtfs_feed_instance_id = ? and route_id = ? and service_id = ? and trip_id = ?
 END
-    my $sth = $self->dbh->prepare($sql);
-    $sth->execute($geo_gtfs_feed_instance_id, $route_id, $service_id, $trip_id);
-    my $result = $sth->fetchrow_hashref();
-    return $result;
+	my $sth = $self->dbh->prepare($sql);
+	$sth->execute($geo_gtfs_feed_instance_id, $route_id, $service_id, $trip_id);
+	my $result = $sth->fetchrow_hashref();
+	return $result;
+    } else {
+	my $sql = <<"END";
+		select *
+		from gtfs_trips
+		where geo_gtfs_feed_instance_id = ? and trip_id = ?
+END
+	my $sth = $self->dbh->prepare($sql);
+	$sth->execute($geo_gtfs_feed_instance_id, $trip_id);
+	my $result = $sth->fetchrow_hashref();
+	return $result;
+    }
 }
 
 sub get_gtfs_stop {
@@ -558,6 +578,39 @@ BEGIN {
     @GTFS_CALENDAR_WDAY_COLUMN = qw(sunday monday tuesday wednesday thursday friday saturday);
 }
 
+sub get_geo_gtfs_feed_instance_id {
+    my ($self, $geo_gtfs_agency_id, $date) = @_;
+    
+    if ($date =~ m{^(\d{4})(\d{2})(\d{2})$}) {
+	$date = "$1-$2-$3";
+    }
+    my $time_t = str2time($date);
+    my @time_t = localtime($time_t);
+    my $yyyymmdd = strftime("%Y%m%d", @time_t);
+    my $wday = $time_t[6];	# sunday is zero
+    my $wday_column = $GTFS_CALENDAR_WDAY_COLUMN[$wday];
+
+    my $sql = <<"END";
+	select geo_gtfs_feed_instance_id, service_id
+	from gtfs_calendar c
+          join geo_gtfs_feed_instance i on c.geo_gtfs_feed_instance_id = i.id
+          join geo_gtfs_feed f          on i.geo_gtfs_feed_id = f.id
+        where $wday_column and ? between start_date and end_date
+          and geo_gtfs_agency_id = ?
+        order by start_date desc, end_date asc
+END
+    my $sth = $self->dbh->prepare($sql);
+    $sth->execute($yyyymmdd, $geo_gtfs_agency_id);
+    my @rows;
+    my $row = $sth->fetchrow_hashref();
+    if (!$row) {
+	die(sprintf("No GTFS feed data available on %s.",
+		    scalar(localtime(@time_t))));
+    }
+    return ($row->{geo_gtfs_feed_instance_id},
+	    $row->{service_id});
+}
+
 sub get_geo_gtfs_feed_instance_id_and_service_id {
     my ($self, $geo_gtfs_agency_id, $date) = @_;
     
@@ -573,30 +626,20 @@ sub get_geo_gtfs_feed_instance_id_and_service_id {
     my $sql = <<"END";
 	select geo_gtfs_feed_instance_id, service_id
 	from gtfs_calendar c
-          join geo_gtfs_feed_instance i on c.geo_gtfs_feed_instance_id =
-                                           i.id
-          join geo_gtfs_feed f          on i.geo_gtfs_feed_id =
-                                           f.id
+          join geo_gtfs_feed_instance i on c.geo_gtfs_feed_instance_id = i.id
+          join geo_gtfs_feed f          on i.geo_gtfs_feed_id = f.id
         where $wday_column and ? between start_date and end_date
           and geo_gtfs_agency_id = ?
+        order by start_date desc, end_date asc
 END
-    #print("$sql\n");
-    #printf("%s; %s\n", $yyyymmdd, $geo_gtfs_agency_id);
     my $sth = $self->dbh->prepare($sql);
     $sth->execute($yyyymmdd, $geo_gtfs_agency_id);
     my @rows;
-    while (my $row = $sth->fetchrow_hashref()) {
-	push(@rows, $row);
-    }
-    $sth->finish();
-    if (scalar(@rows) < 0) {
+    my $row = $sth->fetchrow_hashref();
+    if (!$row) {
 	die(sprintf("No GTFS feed data available on %s.",
 		    scalar(localtime(@time_t))));
     }
-    if (scalar(@rows) > 1) {
-	die("UNEXPECTED ERROR TYPE 3.\n");
-    }
-    my $row = $rows[0];
     return ($row->{geo_gtfs_feed_instance_id},
 	    $row->{service_id});
 }
@@ -607,6 +650,7 @@ END
 
 sub select_or_insert_geo_gtfs_agency_id {
     my ($self, $geo_gtfs_agency_name) = @_;
+    return $geo_gtfs_agency_name if $geo_gtfs_agency_name =~ m{^\d+$};
     return $self->select_or_insert_id("table_name" => "geo_gtfs_agency",
 				      "id_name" => "id",
 				      "key_fields" => { "name" => $geo_gtfs_agency_name });
