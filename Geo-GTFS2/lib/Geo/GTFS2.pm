@@ -46,6 +46,7 @@ use fields qw(dir
 	      vehicle_positions_array
 	      trip_updates_array
 	      realtime_feed
+	      geo_gtfs_agency_name
 	      geo_gtfs_agency_id
 	      geo_gtfs_feed_id
 	      geo_gtfs_feed_instance_id
@@ -86,8 +87,19 @@ sub init {
 # GENERAL
 ###############################################################################
 
+sub set_agency {
+    my ($self, $agency_name) = @_;
+
+    $self->{geo_gtfs_agency_name} = $agency_name;
+    $self->{geo_gtfs_agency_id} =
+      $self->db->select_or_insert_geo_gtfs_agency_id($agency_name);
+}
+
 sub process_url {
-    my ($self, $geo_gtfs_agency_name, $url) = @_;
+    my ($self, $url) = @_;
+
+    my $geo_gtfs_agency_name = $self->{geo_gtfs_agency_name};
+    
     my $ua = $self->ua;
     if ($url =~ m{\.pb$}) {
 	HTTP::Cache::Transparent::init({ BasePath => $self->{http_cache_dir},
@@ -244,23 +256,19 @@ sub process_protocol_buffers {
 }
 
 sub update_realtime {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id =
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my @feeds = $self->db->get_geo_gtfs_realtime_feeds($geo_gtfs_agency_id);
+    my ($self) = @_;
+
+    my @feeds = $self->db->get_geo_gtfs_realtime_feeds($self->{geo_gtfs_agency_id});
     foreach my $feed (@feeds) {
 	my $url = $feed->{url};
-	$self->process_url($geo_gtfs_agency_name, $url);
+	$self->process_url($url);
     }
 }
 
 sub list_latest_realtime_feeds {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id =
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($geo_gtfs_agency_id);
+    my ($self) = @_;
+
+    my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($self->{geo_gtfs_agency_id});
     print("id      feed type  filename\n");
     print("------  ---------  -------------------------------------------------------------------------------\n");
     foreach my $i (@instances) {
@@ -270,11 +278,9 @@ sub list_latest_realtime_feeds {
 }
 
 sub get_records {
-    my ($self, $geo_gtfs_agency_name, $feed_type) = @_;
-    my $geo_gtfs_agency_id =
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($geo_gtfs_agency_id);
+    my ($self, $feed_type) = @_;
+
+    my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($self->{geo_gtfs_agency_id});
     my %instances = map { ($_->{feed_type}, $_) } @instances;
     my @results;
     my $process_entity = sub {
@@ -308,11 +314,9 @@ sub get_records {
 }
 
 sub get_all_data {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id =
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($geo_gtfs_agency_id);
+    my ($self) = @_;
+
+    my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($self->{geo_gtfs_agency_id});
     my %instances = map { ($_->{feed_type}, $_) } @instances;
     my $all = $instances{all};
     return unless $all;
@@ -354,14 +358,14 @@ sub get_all_data {
 }
 
 sub get_alerts {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my @results = $self->get_records($geo_gtfs_agency_name, "alert");
+    my ($self) = @_;
+    my @results = $self->get_records("alert");
     return @results;
 }
 
 sub get_vehicle_positions {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my @results = $self->get_records($geo_gtfs_agency_name, "vehicle");
+    my ($self) = @_;
+    my @results = $self->get_records("vehicle");
     $self->{vehicle_positions} = {};
     foreach my $result (@results) {
 	my $label = eval { $result->{vehicle}->{label} };
@@ -373,8 +377,8 @@ sub get_vehicle_positions {
 }
 
 sub get_trip_updates {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my @results = $self->get_records($geo_gtfs_agency_name, "trip_update");
+    my ($self) = @_;
+    my @results = $self->get_records("trip_update");
     $self->{trip_updates} = {};
     foreach my $result (@results) {
 	my $trip_id = eval { $result->{trip}->{trip_id} };
@@ -517,11 +521,7 @@ sub cull_crappy_consolidated_update_records {
 }
 
 sub populate_trip_and_route_info {
-    my ($self, $geo_gtfs_agency_name) = @_;
-
-    my $geo_gtfs_agency_id =
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my ($self) = @_;
 
     foreach my $tu ($self->get_trip_update_list()) {
 	my $label    = eval { $tu->{label} };
@@ -529,7 +529,7 @@ sub populate_trip_and_route_info {
 	my $route_id = eval { $tu->{route_id} };
 	my $start_date = eval { $tu->{start_date} };
 
-	my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($geo_gtfs_agency_id, $tu->{start_date});
+	my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $tu->{start_date});
 	my $trip = $self->db->get_gtfs_trip($geo_gtfs_feed_instance_id, $trip_id);
 	if (!$trip) {
 	    $tu->{_exclude_} = "no trip record";
@@ -677,30 +677,30 @@ sub populate_stop_information {
 }
 
 sub realtime_status_data {
-    my ($self, $geo_gtfs_agency_name, %args) = @_;
+    my ($self, %args) = @_;
     my $gtfs2 = $self;
     my $stage = $args{stage} // 9999;
     if (!$args{nofetch}) {
-	$gtfs2->update_realtime($geo_gtfs_agency_name);
+	$gtfs2->update_realtime();
     }
 
-    my $o = $gtfs2->get_all_data($geo_gtfs_agency_name);
+    my $o = $gtfs2->get_all_data();
     if ($stage < 1) {
 	return $o;
     }
-    $gtfs2->flatten_vehicle_positions($geo_gtfs_agency_name);
-    $gtfs2->flatten_trip_updates($geo_gtfs_agency_name);
+    $gtfs2->flatten_vehicle_positions();
+    $gtfs2->flatten_trip_updates();
     if ($stage < 2) {
 	return $o;
     }
-    $gtfs2->consolidate_flattened_vehicle_records_into_trip_update_records($geo_gtfs_agency_name);
+    $gtfs2->consolidate_flattened_vehicle_records_into_trip_update_records();
     if ($stage < 3) {
 	return $o;
     }
     $gtfs2->mark_as_of_times();
-    $gtfs2->cull_crappy_consolidated_update_records($geo_gtfs_agency_name);
-    $gtfs2->populate_trip_and_route_info($geo_gtfs_agency_name);
-    $gtfs2->mark_next_coming_stops($geo_gtfs_agency_name);
+    $gtfs2->cull_crappy_consolidated_update_records();
+    $gtfs2->populate_trip_and_route_info();
+    $gtfs2->mark_next_coming_stops();
     if ($args{limit_stop_time_updates}) {
 	$gtfs2->remove_most_stop_time_update_data();
     }
@@ -712,16 +712,14 @@ sub realtime_status_data {
 }
 
 sub print_realtime_status_raw {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my $o = $self->realtime_status_data($geo_gtfs_agency_name,
-					limit_stop_time_updates => 1);
+    my ($self) = @_;
+    my $o = $self->realtime_status_data(limit_stop_time_updates => 1);
     print(Dumper($o));
 }
 
 sub print_realtime_status {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my $o = $self->realtime_status_data($geo_gtfs_agency_name,
-					limit_stop_time_updates => 1);
+    my ($self) = @_;
+    my $o = $self->realtime_status_data(limit_stop_time_updates => 1);
 
     my @tu = $self->get_sorted_trip_updates();
 
@@ -765,14 +763,11 @@ sub print_realtime_status {
 }
 
 sub realtime_status_old {
-    my ($self, $geo_gtfs_agency_name, %args) = @_;
-    my $geo_gtfs_agency_id =
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my ($self, %args) = @_;
 
-    my @vp     = $self->get_vehicle_positions($geo_gtfs_agency_id);
-    my @tu     = $self->get_trip_updates($geo_gtfs_agency_id);
-    my @alerts = $self->get_alerts($geo_gtfs_agency_id);
+    my @vp     = $self->get_vehicle_positions($self->{geo_gtfs_agency_id});
+    my @tu     = $self->get_trip_updates($self->{geo_gtfs_agency_id});
+    my @alerts = $self->get_alerts($self->{geo_gtfs_agency_id});
 
     if ($args{raw}) {
 	foreach my $vp (@vp) {
@@ -788,7 +783,7 @@ sub realtime_status_old {
     }
 
     warn("Processing status info...\n");
-    my $status_info = $self->get_useful_realtime_status_info($geo_gtfs_agency_id, \@vp, \@tu, \@alerts);
+    my $status_info = $self->get_useful_realtime_status_info($self->{geo_gtfs_agency_id}, \@vp, \@tu, \@alerts);
     my @info = @{$status_info->{info}};
 
     print("                                                                                                                 sched.   realtime      \n");
@@ -859,7 +854,7 @@ sub realtime_status_old {
 }
 
 # sub sanity_check {
-#     my ($self, $geo_gtfs_agency_id);
+#     my ($self);
     
 #     my %vp_trip_id;
 #     my %vp_vehicle_label;
@@ -893,7 +888,7 @@ sub realtime_status_old {
 # }
 
 sub get_useful_realtime_status_info {
-    my ($self, $geo_gtfs_agency_id, $vp_array, $tu_array, $alerts_array) = @_;
+    my ($self, $vp_array, $tu_array, $alerts_array) = @_;
     
     my @info;
 
@@ -1013,7 +1008,7 @@ sub get_useful_realtime_status_info {
 	}
 
 	my ($geo_gtfs_feed_instance_id, $service_id)
-	  = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($geo_gtfs_agency_id, $info->{start_date});
+	  = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $info->{start_date});
 	$self->{geo_gtfs_feed_instance_id} = $geo_gtfs_feed_instance_id;
 
 	$info->{geo_gtfs_feed_instance_id} = $geo_gtfs_feed_instance_id;
@@ -1122,11 +1117,9 @@ sub read_realtime_feed {
 }
 
 sub list_realtime_feeds {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id = 
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-    my @feeds = $self->db->get_geo_gtfs_realtime_feeds($geo_gtfs_agency_id);
+    my ($self) = @_;
+
+    my @feeds = $self->db->get_geo_gtfs_realtime_feeds($self->{geo_gtfs_agency_id});
     print("id    active?  feed type  url\n");
     print("----  -------  ---------  -------------------------------------------------------------------------------\n");
     foreach my $feed (@feeds) {
@@ -1144,7 +1137,7 @@ use Archive::Zip::MemberRead;
 use Digest::MD5 qw/md5_hex/;
 
 sub process_gtfs_feed {
-    my ($self, $geo_gtfs_agency_name, $request, $response) = @_;
+    my ($self, $request, $response) = @_;
     my $url = $response->base;
     my $cached = ($response->code == 304 || ($response->header("X-Cached") && $response->header("X-Content-Unchanged")));
     my $cref = $response->content_ref;
@@ -1155,8 +1148,8 @@ sub process_gtfs_feed {
 
     my $md5 = md5_hex($url);
 
-    my $zip_filename     = sprintf("%s/data/%s/gtfs/%s-%s-%s-%s.zip", $self->{dir}, $geo_gtfs_agency_name, $md5, $retrieved, $last_modified, $content_length);
-    my $rel_zip_filename = sprintf(   "data/%s/gtfs/%s-%s-%s-%s.zip",               $geo_gtfs_agency_name, $md5, $retrieved, $last_modified, $content_length);
+    my $zip_filename     = sprintf("%s/data/%s/gtfs/%s-%s-%s-%s.zip", $self->{dir}, $self->{geo_gtfs_agency_name}, $md5, $retrieved, $last_modified, $content_length);
+    my $rel_zip_filename = sprintf(   "data/%s/gtfs/%s-%s-%s-%s.zip",               $self->{geo_gtfs_agency_name}, $md5, $retrieved, $last_modified, $content_length);
     make_path(dirname($zip_filename));
     if (open(my $fh, ">", $zip_filename)) {
 	binmode($fh);
@@ -1172,12 +1165,9 @@ sub process_gtfs_feed {
     }
     my @members = $zip->members();
 
-    my $geo_gtfs_agency_id =
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
     my $geo_gtfs_feed_id =
       $self->{geo_gtfs_feed_id} =
-	$self->db->select_or_insert_geo_gtfs_feed_id($geo_gtfs_agency_id, $url);
+	$self->db->select_or_insert_geo_gtfs_feed_id($self->{geo_gtfs_agency_id}, $url);
     my $geo_gtfs_feed_instance_id =
       $self->{geo_gtfs_feed_instance_id} =
 	$self->db->select_or_insert_geo_gtfs_feed_instance_id($geo_gtfs_feed_id,
@@ -1238,17 +1228,11 @@ sub process_gtfs_feed {
 #------------------------------------------------------------------------------
 
 sub update {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id =
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my ($self) = @_;
 }
 
 sub list_routes {
-    my ($self, $geo_gtfs_agency_name) = @_;
-    my $geo_gtfs_agency_id =
-      $self->{geo_gtfs_agency_id} =
-	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
+    my ($self) = @_;
 }
 
 ###############################################################################
@@ -1293,35 +1277,33 @@ sub run_cmdline {
     if (!@args) {
 	$self->help_cmdline();
     } elsif ($self->is_agency_name($args[0])) {
-	my $geo_gtfs_agency_name = shift(@args);
-	my ($geo_gtfs_agency_id, $status) =
-	  $self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
-	$self->{geo_gtfs_agency_id} = $geo_gtfs_agency_id;
+
+	$self->set_agency(shift(@args));
 
 	if (!@args) {
-	    printf("%8d %-8s %s\n", $geo_gtfs_agency_id, $status, $geo_gtfs_agency_name);
+	    printf("%8d %s\n", $self->{geo_gtfs_agency_id}, $self->{geo_gtfs_agency_name});
 	} elsif ($self->is_url($args[0])) {
 	    foreach my $arg (@args) {
 		if ($self->is_url($arg)) {
-		    $self->process_url($geo_gtfs_agency_name, $arg);
+		    $self->process_url($arg);
 		} else {
 		    warn("Unknown argument: $arg\n");
 		}
 	    }
 	} elsif ($args[0] eq "update") {
-	    $self->update($geo_gtfs_agency_name);
+	    $self->update();
 	} elsif ($args[0] eq "list-realtime-feeds") {
-	    $self->list_realtime_feeds($geo_gtfs_agency_name);
+	    $self->list_realtime_feeds();
 	} elsif ($args[0] eq "update-realtime") {
-	    $self->update_realtime($geo_gtfs_agency_name);
+	    $self->update_realtime();
 	} elsif ($args[0] eq "realtime-status") {
-	    $self->realtime_status($geo_gtfs_agency_name);
+	    $self->realtime_status();
 	} elsif ($args[0] eq "realtime-summary") {
-	    $self->realtime_status($geo_gtfs_agency_name, summary => 1);
+	    $self->realtime_status(summary => 1);
 	} elsif ($args[0] eq "realtime-raw") {
-	    $self->realtime_status($geo_gtfs_agency_name, raw => 1);
+	    $self->realtime_status(raw => 1);
 	} elsif ($args[0] eq "list-routes") {
-	    $self->list_routes($geo_gtfs_agency_name);
+	    $self->list_routes();
 	} elsif ($args[0] eq "sqlite") {
 	    $self->exec_sqlite_utility();
 	}
