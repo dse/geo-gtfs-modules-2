@@ -418,7 +418,7 @@ sub get_sorted_trip_updates {
 
 use constant TIMESTAMP_CUTOFF_AGE => 3600;
 
-sub cull_crappy_consolidated_update_records {
+sub remove_turds {
     my ($self) = @_;
 
     foreach my $tu ($self->get_trip_update_list()) {
@@ -623,7 +623,7 @@ sub get_realtime_status_data {
 	return $o;
     }
     $gtfs2->mark_as_of_times();
-    $gtfs2->cull_crappy_consolidated_update_records();
+    $gtfs2->remove_turds();
     $gtfs2->populate_trip_and_route_info();
     $gtfs2->mark_next_coming_stops();
     if ($args{limit_stop_time_updates}) {
@@ -676,7 +676,7 @@ sub print_realtime_status {
 	       $tu->{route_long_name} // "-",
 	       $tu->{trip_headsign} // "-",
 	       $fmt_as_of,
-	       $tu->{stop_sequence} // "",
+	       $stu->{stop_sequence} // "",
 	       $next_stop_name // "-",
 	       $scheduled_time // "-",
 	       $fmt_realtime_time,
