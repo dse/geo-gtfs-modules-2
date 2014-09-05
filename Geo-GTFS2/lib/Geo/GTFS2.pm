@@ -16,9 +16,7 @@ BEGIN {
 use DBI;
 use Data::Dumper;
 use File::Basename qw(dirname basename);
-use File::MMagic;		# File::MMagic best detects .zip
-                                # files, and allows us to add magic
-                                # for Google Protocol Buffers files.
+use File::MMagic;		# see note [1] below
 use File::Path qw(make_path);
 use File::Spec;
 use Google::ProtocolBuffers;
@@ -29,6 +27,9 @@ use LWP::UserAgent;
 use List::MoreUtils qw(all);
 use POSIX qw(strftime floor uname);
 use Text::CSV;
+
+# [1] File::MMagic best detects .zip files, and allows us to add magic
+# for Google Protocol Buffers files.
 
 use fields qw(dir http_cache_dir
 	      sqlite_filename
