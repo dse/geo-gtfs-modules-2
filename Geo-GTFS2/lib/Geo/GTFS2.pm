@@ -351,7 +351,10 @@ sub process_020_flatten_trip_updates {
 		delete $stu->{$k} if exists $stu->{$k} && !scalar(keys(%{$stu->{$k}}));
 	    }
 	    $stu->{realtime_time} = $realtime_time if defined $realtime_time;
-	    $stu->{delay}         = $delay         if defined $delay;
+	    if (defined $delay) {
+		$stu->{delay}         = $delay;
+		$stu->{delay_minutes} = int($delay / 60 + 0.5);
+	    }
 	}
 	foreach my $k (qw(trip vehicle)) {
 	    delete $tu->{$k} if !scalar(keys(%{$tu->{$k}}));
@@ -637,10 +640,60 @@ sub get_realtime_status_data {
     return $o;
 }
 
+sub print_trip_status_raw {
+    my ($self, $trip_id) = @_;
+    $self->get_realtime_status_data();
+    my $tu = $self->{trip_updates}->{$trip_id};
+    if (!$tu) {
+	my @keys = keys %{$self->{trip_updates}};
+	print("@keys\n");
+	die("No trip with trip_id $trip_id.\n");
+    }
+    print(Dumper($tu));
+}
+
+sub print_trip_status {
+    my ($self, $trip_id) = @_;
+    $self->get_realtime_status_data();
+    my $tu = $self->{trip_updates}->{$trip_id};
+    if (!$tu) {
+	my @keys = keys %{$self->{trip_updates}};
+	print("@keys\n");
+	die("No trip with trip_id $trip_id.\n");
+    }
+
+    printf("            Trip ID: %s\n", $trip_id);
+    printf("Longitude, Latitude: %.6f, %.6f\n",
+	   $tu->{longitude}, $tu->{latitude});
+    printf("              Route: %s %s\n", $tu->{route_short_name}, $tu->{route_long_name});
+    printf("        Destination: %s\n", $tu->{trip_headsign});
+    printf("              As of: %s\n",  strftime("%Y-%m-%d %H:%M:%S %Z", localtime($tu->{as_of})));
+    printf("               (Now: %s)\n", strftime("%Y-%m-%d %H:%M:%S %Z", localtime()));
+    print("\n");
+
+    print("    Seq. Due Time                                  Longitude   Latitude    | Est.Time Delay\n");
+    print("    ---- -------- -------------------------------- ----------- ----------- | -------- -----\n");
+
+    foreach my $stu (@{$tu->{stop_time_update}}) {
+	printf("%3s %4s %-8s %-32.32s %11.6f %11.6f | %-8s %5s\n",
+	       eval { $stu->{is_next_stop_time_update} } ? "***" : "",
+	       $stu->{stop_sequence} // "-",
+	       $stu->{scheduled_time} // "-",
+	       $stu->{stop_name} // "-",
+	       $stu->{stop_lon},
+	       $stu->{stop_lat},
+	       $stu->{realtime_time} ? strftime("%H:%M:%S", localtime($stu->{realtime_time})) : "-",
+	       $stu->{delay_minutes} // "");
+    }
+    
+
+}
+
 sub print_realtime_status_raw {
     my ($self) = @_;
     my $o = $self->get_realtime_status_data(limit_stop_time_updates => 1);
     print(Dumper($o));
+
 }
 
 sub print_realtime_status {
@@ -657,17 +710,12 @@ sub print_realtime_status {
 
 	my $dep_time        = eval { $stu->{dep_time} };
 	my $next_stop_name  = eval { $stu->{stop_name} };
-	my $next_stop_delay = eval { $stu->{delay} };
-	for ($next_stop_delay) {
-	    if (defined $_) {
-		$_ = int($_ / 60 + 0.5);
-	    }
-	}
-	my $realtime_time = eval { $stu->{realtime_time} };
+	my $next_stop_delay = eval { $stu->{delay_minutes} };
+	my $realtime_time   = eval { $stu->{realtime_time} };
 
 	my $fmt_as_of         = $as_of         && eval { strftime("%H:%M:%S", localtime($as_of        )) } // "-";
 	my $fmt_realtime_time = $realtime_time && eval { strftime("%H:%M:%S", localtime($realtime_time)) } // "-";
-	my $scheduled_time = eval { $stu->{scheduled_time} };
+	my $scheduled_time    = eval { $stu->{scheduled_time} };
 
 	for ($stu->{stop_sequence}) {
 	    $_ = "#$_" if defined $_;
