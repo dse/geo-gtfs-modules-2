@@ -318,7 +318,7 @@ sub get_all_data {
     return $o;
 }
 
-sub flatten_vehicle_positions {
+sub process_010_flatten_vehicle_positions {
     my ($self) = @_;
     foreach my $vp (@{$self->{vehicle_positions_array}}) {
 	eval { $vp->{trip_id}   = delete $vp->{trip}->{trip_id}       if defined $vp->{trip}->{trip_id};       };
@@ -331,7 +331,7 @@ sub flatten_vehicle_positions {
     }
 }
 
-sub flatten_trip_updates {
+sub process_020_flatten_trip_updates {
     my ($self) = @_;
     foreach my $tu ($self->get_trip_update_list()) {
 	eval { $tu->{trip_id}    = delete $tu->{trip}->{trip_id}    if defined $tu->{trip}->{trip_id};    };
@@ -358,7 +358,7 @@ sub flatten_trip_updates {
     }
 }
 
-sub mark_as_of_times {
+sub process_040_mark_as_of_times {
     my ($self) = @_;
     foreach my $tu ($self->get_trip_update_list()) {
 	my $timestamp        = delete $tu->{timestamp};
@@ -372,7 +372,7 @@ sub get_trip_update_list {
     return grep { !$_->{_exclude_} } @{$self->{trip_updates_array}};
 }
 
-sub consolidate_flattened_vehicle_records_into_trip_update_records {
+sub process_030_consolidate_records {
     my ($self) = @_;
     foreach my $tu ($self->get_trip_update_list()) {
 	my $label   = eval { $tu->{label} };
@@ -418,7 +418,7 @@ sub get_sorted_trip_updates {
 
 use constant TIMESTAMP_CUTOFF_AGE => 3600;
 
-sub remove_turds {
+sub process_050_remove_turds {
     my ($self) = @_;
 
     foreach my $tu ($self->get_trip_update_list()) {
@@ -449,7 +449,7 @@ sub remove_turds {
     }
 }
 
-sub populate_trip_and_route_info {
+sub process_060_populate_trip_and_route_info {
     my ($self) = @_;
 
     foreach my $tu ($self->get_trip_update_list()) {
@@ -495,7 +495,7 @@ sub populate_trip_and_route_info {
     }
 }
 
-sub mark_next_coming_stops {
+sub process_070_mark_next_coming_stops {
     my ($self) = @_;
     foreach my $tu ($self->get_trip_update_list()) {
 	my $current_time = $tu->{header_timestamp} // $tu->{timestamp} // time();
@@ -513,7 +513,7 @@ sub mark_next_coming_stops {
     }
 }
 
-sub remove_most_stop_time_update_data {
+sub process_080_remove_most_stop_time_update_data {
     my ($self) = @_;
     foreach my $tu ($self->get_trip_update_list()) {
 	my $stu_array = $tu->{stop_time_update};
@@ -533,7 +533,7 @@ sub remove_most_stop_time_update_data {
     }
 }
 
-sub populate_stop_time_update {
+sub process_090_populate_stop_time_update {
     my ($self, $tu, $stu) = @_;
 
     my $stop_id = $stu->{stop_id};
@@ -585,17 +585,17 @@ sub populate_stop_time_update {
     }
 }
 
-sub populate_stop_information {
+sub process_090_populate_stop_information {
     my ($self) = @_;
     foreach my $tu ($self->get_trip_update_list()) {
 	my $ns = $tu->{next_stop};
 	if ($ns) {
-	    $self->populate_stop_time_update($tu, $ns);
+	    $self->process_090_populate_stop_time_update($tu, $ns);
 	}
 	my $stu_array = $tu->{stop_time_update};
 	if ($stu_array && scalar(@$stu_array)) {
 	    foreach my $stu (@$stu_array) {
-		$self->populate_stop_time_update($tu, $stu);
+		$self->process_090_populate_stop_time_update($tu, $stu);
 	    }
 	}
     }
@@ -613,26 +613,26 @@ sub get_realtime_status_data {
     if ($stage < 1) {
 	return $o;
     }
-    $gtfs2->flatten_vehicle_positions();
-    $gtfs2->flatten_trip_updates();
+    $gtfs2->process_010_flatten_vehicle_positions();
+    $gtfs2->process_020_flatten_trip_updates();
     if ($stage < 2) {
 	return $o;
     }
-    $gtfs2->consolidate_flattened_vehicle_records_into_trip_update_records();
+    $gtfs2->process_030_consolidate_records();
     if ($stage < 3) {
 	return $o;
     }
-    $gtfs2->mark_as_of_times();
-    $gtfs2->remove_turds();
-    $gtfs2->populate_trip_and_route_info();
-    $gtfs2->mark_next_coming_stops();
+    $gtfs2->process_040_mark_as_of_times();
+    $gtfs2->process_050_remove_turds();
+    $gtfs2->process_060_populate_trip_and_route_info();
+    $gtfs2->process_070_mark_next_coming_stops();
     if ($args{limit_stop_time_updates}) {
-	$gtfs2->remove_most_stop_time_update_data();
+	$gtfs2->process_080_remove_most_stop_time_update_data();
     }
     if ($stage < 4) {
 	return $o;
     }
-    $gtfs2->populate_stop_information();
+    $gtfs2->process_090_populate_stop_information();
     return $o;
 }
 
