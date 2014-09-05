@@ -62,15 +62,11 @@ sub new {
 
 sub init {
     my ($self, %args) = @_;
-
     my @pwent = getpwuid($>);
-    
     while (my ($k, $v) = each(%args)) {
 	$self->{$k} = $v;
     }
-
     my $dir;
-
     my $username = $pwent[0];
     if ($username eq "_www") { # special os x user
 	$dir = $self->{dir} //= "/Users/_www/.geo-gtfs2";
@@ -78,10 +74,8 @@ sub init {
 	my $HOME = $ENV{HOME} // $pwent[7];
 	$dir = $self->{dir} //= "$HOME/.geo-gtfs2";
     }
-
     $self->{http_cache_dir} //= "$dir/http-cache";
     my $dbfile = $self->{sqlite_filename} //= "$dir/google_transit.sqlite";
-
     $self->{magic} = File::MMagic->new();
     $self->{magic}->addMagicEntry("0\tstring\t\\x0a\\x0b\\x0a\\x03\tapplication/x-protobuf");
     $self->{gtfs_realtime_proto} = "https://developers.google.com/transit/gtfs-realtime/gtfs-realtime.proto";
@@ -406,38 +400,24 @@ sub flatten_vehicle_positions {
 
 sub flatten_trip_updates {
     my ($self) = @_;
-    foreach my $tu (@{$self->{trip_updates_array}}) {
+    foreach my $tu ($self->get_trip_update_list()) {
 	eval { $tu->{trip_id}    = delete $tu->{trip}->{trip_id}    if defined $tu->{trip}->{trip_id};    };
 	eval { $tu->{start_time} = delete $tu->{trip}->{start_time} if defined $tu->{trip}->{start_time}; };
 	eval { $tu->{start_date} = delete $tu->{trip}->{start_date} if defined $tu->{trip}->{start_date}; };
 	eval { $tu->{route_id}   = delete $tu->{trip}->{route_id}   if defined $tu->{trip}->{route_id};   };
 	eval { $tu->{label}      = delete $tu->{vehicle}->{label}   if defined $tu->{vehicle}->{label};   };
 	foreach my $stu (eval { @{$tu->{stop_time_update}} }) {
-	    my $dep = $stu->{departure};
-	    if (defined $dep) {
-		if (defined $dep->{time}) {
-		    $stu->{dep_time} = delete $dep->{time};
-		}
-		if (defined $dep->{delay}) {
-		    $stu->{delay} = delete $dep->{delay};
-		}
-	    }
-	    my $arr = $stu->{arrival};
-	    if (defined $arr) {
-		if (defined $arr->{time}) {
-		    $stu->{arr_time} = delete $arr->{time};
-		}
-		if (defined $arr->{delay}) {
-		    if (defined $stu->{delay}) {
-			$stu->{arr_delay} = delete $arr->{delay};
-		    } else {
-			$stu->{delay} = delete $arr->{delay};
-		    }
-		}
-	    }
+	    my $dep_time      = eval { delete $stu->{departure}->{time} };
+	    my $arr_time      = eval { delete $stu->{arrival}->{time} };
+	    my $dep_delay     = eval { delete $stu->{departure}->{delay} };
+	    my $arr_delay     = eval { delete $stu->{arrival}->{delay} };
+	    my $realtime_time = $arr_time // $dep_time;
+	    my $delay         = $arr_delay // $dep_delay;
 	    foreach my $k (qw(departure arrival)) {
 		delete $stu->{$k} if exists $stu->{$k} && !scalar(keys(%{$stu->{$k}}));
 	    }
+	    $stu->{realtime_time} = $realtime_time if defined $realtime_time;
+	    $stu->{delay}         = $delay         if defined $delay;
 	}
 	foreach my $k (qw(trip vehicle)) {
 	    delete $tu->{$k} if !scalar(keys(%{$tu->{$k}}));
@@ -445,9 +425,23 @@ sub flatten_trip_updates {
     }
 }
 
-sub consolidate_flattened_records {
+sub mark_as_of_times {
     my ($self) = @_;
-    foreach my $tu (@{$self->{trip_updates_array}}) {
+    foreach my $tu ($self->get_trip_update_list()) {
+	my $timestamp        = delete $tu->{timestamp};
+	my $header_timestamp = delete $tu->{header_timestamp};
+	$tu->{as_of} = $timestamp // $header_timestamp // time();
+    }
+}
+
+sub get_trip_update_list {
+    my ($self) = @_;
+    return grep { !$_->{_exclude_} } @{$self->{trip_updates_array}};
+}
+
+sub consolidate_flattened_vehicle_records_into_trip_update_records {
+    my ($self) = @_;
+    foreach my $tu ($self->get_trip_update_list()) {
 	my $label   = eval { $tu->{label} };
 	my $trip_id = eval { $tu->{trip_id} };
 
@@ -480,30 +474,68 @@ sub consolidate_flattened_records {
     @$entity_array_ref = grep { !$_->{vehicle} || !$_->{vehicle}->{_delete_} } @$entity_array_ref;
 }
 
-sub enhance_consolidated_records {
+sub get_sorted_trip_updates {
+    my ($self) = @_;
+    my @tu = $self->get_trip_update_list();
+    @tu = map { [ $_, $_->{route_id} // 0, $_->{direction_id} // 0 ] } @tu;
+    @tu = sort { _route_id_cmp($a->[1], $b->[1]) || $a->[2] <=> $b->[2] } @tu;
+    @tu = map { $_->[0] } @tu;
+    return @tu;
+}
+
+use constant TIMESTAMP_CUTOFF_AGE => 3600;
+
+sub cull_crappy_consolidated_update_records {
+    my ($self) = @_;
+
+    foreach my $tu ($self->get_trip_update_list()) {
+	my $label    = eval { $tu->{label} };
+	my $trip_id  = eval { $tu->{trip_id} };
+	my $route_id = eval { $tu->{route_id} };
+	my $start_date = eval { $tu->{start_date} };
+	if (!defined $label) {
+	    $tu->{_exclude_} = "no vehicle label";
+	    next;
+	}
+	if (!defined $trip_id) {
+	    $tu->{_exclude_} = "no trip_id";
+	    next;
+	}
+	if (!defined $route_id) {
+	    $tu->{_exclude_} = "no route_id";
+	    next;
+	}
+	if (!defined $start_date) {
+	    $tu->{_exclude_} = "no start_date";
+	    next;
+	}
+	if ($tu->{as_of} < time() - TIMESTAMP_CUTOFF_AGE) {
+	    $tu->{_exclude_} = "old";
+	    next;
+	}
+    }
+}
+
+sub populate_trip_and_route_info {
     my ($self, $geo_gtfs_agency_name) = @_;
 
     my $geo_gtfs_agency_id =
       $self->{geo_gtfs_agency_id} =
 	$self->db->select_or_insert_geo_gtfs_agency_id($geo_gtfs_agency_name);
 
-    foreach my $tu (@{$self->{trip_updates_array}}) {
+    foreach my $tu ($self->get_trip_update_list()) {
 	my $label    = eval { $tu->{label} };
 	my $trip_id  = eval { $tu->{trip_id} };
 	my $route_id = eval { $tu->{route_id} };
 	my $start_date = eval { $tu->{start_date} };
-	if (!defined $label || !defined $trip_id || !defined $route_id || !defined $start_date) {
-	    $tu->{_exclude_} = 1;
-	    next;
-	}
+
 	my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($geo_gtfs_agency_id, $tu->{start_date});
 	my $trip = $self->db->get_gtfs_trip($geo_gtfs_feed_instance_id, $trip_id);
 	if (!$trip) {
-	    $tu->{geo_gtfs_feed_instance_id} = $geo_gtfs_feed_instance_id;
-	    $tu->{service_id} = $service_id;
-	    $tu->{_exclude_} = 2;
+	    $tu->{_exclude_} = "no trip record";
 	    next;
 	}
+
 	foreach my $key (qw(trip_headsign direction_id)) {
 	    if (!defined $tu->{$key}) {
 		$tu->{$key} = delete $trip->{$key};
@@ -511,15 +543,16 @@ sub enhance_consolidated_records {
 		delete $trip->{$key};
 	    }
 	}
+
 	my $route = $self->db->get_gtfs_route($geo_gtfs_feed_instance_id, $route_id);
 	if (defined $route) {
 	    foreach my $key (qw(route_color
-			      route_desc
-			      route_long_name
-			      route_short_name
-			      route_text_color
-			      route_type
-			      route_url)) {
+				route_desc
+				route_long_name
+				route_short_name
+				route_text_color
+				route_type
+				route_url)) {
 		if (!defined $tu->{$key}) {
 		    $tu->{$key} = $route->{$key};
 		} elsif ($tu->{$key} eq $route->{$key}) {
@@ -527,17 +560,21 @@ sub enhance_consolidated_records {
 		}
 	    }
 	} else {
-	    warn(sprintf("no route for %s, %s\n", $geo_gtfs_feed_instance_id, $route_id));
+	    $tu->{_exclude_} = "no route for $geo_gtfs_feed_instance_id $route_id\n";
+	    next;
 	}
     }
+}
 
-    foreach my $tu (@{$self->{trip_updates_array}}) {
+sub mark_next_coming_stops {
+    my ($self) = @_;
+    foreach my $tu ($self->get_trip_update_list()) {
 	my $current_time = $tu->{header_timestamp} // $tu->{timestamp} // time();
 	next unless defined $current_time;
 	my $stu_index = -1;
 	foreach my $stu (@{$tu->{stop_time_update}}) {
 	    ++$stu_index;
-	    my $stu_time = $stu->{arr_time} // $stu->{dep_time};
+	    my $stu_time = $stu->{realtime_time};
 	    if (defined $stu_time && $current_time <= $stu_time) {
 		$tu->{next_stop_time_update_index} = $stu_index;
 		$stu->{is_next_stop_time_update} = 1;
@@ -549,7 +586,7 @@ sub enhance_consolidated_records {
 
 sub remove_most_stop_time_update_data {
     my ($self) = @_;
-    foreach my $tu (@{$self->{trip_updates_array}}) {
+    foreach my $tu ($self->get_trip_update_list()) {
 	my $stu_array = $tu->{stop_time_update};
 	next unless $stu_array && scalar(@$stu_array);
 	my $idx = delete $tu->{next_stop_time_update_index};
@@ -569,36 +606,63 @@ sub remove_most_stop_time_update_data {
 
 sub populate_stop_time_update {
     my ($self, $tu, $stu) = @_;
+
     my $stop_id = $stu->{stop_id};
     if (!defined $stop_id || $stop_id eq "UN") {
+	warn("stop time update has no stop_id\n");
 	$stu->{foo} = 1;
 	return;
     }
 
     my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $tu->{start_date});
-
     if (!defined $geo_gtfs_feed_instance_id) {
+	warn("no geo_gtfs_feed_instance_id\n");
 	$stu->{foo} = 3;
 	return;
     }
+
     my $stop = $self->db->get_gtfs_stop($geo_gtfs_feed_instance_id, $stop_id);
     if (!$stop) {
 	warn(sprintf("no stop info for %s, %s\n", $geo_gtfs_feed_instance_id, $stop_id));
 	$stu->{foo} = 2;
 	return;
     }
-    foreach my $key (qw(stop_code stop_name stop_desc stop_lat stop_lon zone_id stop_url location_type parent_station stop_timezone wheelchair_boarding)) {
+
+    foreach my $key (qw(stop_code stop_name stop_desc stop_lat stop_lon
+			zone_id stop_url location_type parent_station
+			stop_timezone wheelchair_boarding)) {
 	if (!defined $stu->{$key}) {
 	    $stu->{$key} = $stop->{$key};
 	} elsif ($stu->{$key} eq $stop->{$key}) {
 	    $stu->{$key} = $stop->{$key};
 	}
     }
+
+    my $trip_id = $tu->{trip_id};
+    if (!defined $trip_id) {
+	warn("no trip_id\n");
+	$stu->{foo} = 2;
+	return;
+    }
+
+    my $stop_time_record = $self->db->get_gtfs_stop_time($geo_gtfs_feed_instance_id,
+							 $stop_id, $trip_id);
+    if ($stop_time_record) {
+	my $scheduled_arrival_time   = $stop_time_record->{arrival_time};
+	my $scheduled_departure_time = $stop_time_record->{departure_time};
+	my $scheduled_time           = $scheduled_arrival_time // $scheduled_departure_time;
+	my $sequence                 = $stop_time_record->{stop_sequence};
+	$stu->{scheduled_time}   = $scheduled_time if defined $scheduled_time;
+	$stu->{stop_time_record} = $stop_time_record;
+	$stu->{stop_sequence}    = $sequence if defined $sequence;
+    } else {
+	warn("no stop_time_record for $geo_gtfs_feed_instance_id, $stop_id, $trip_id\n");
+    }
 }
 
-sub populate_stops {
+sub populate_stop_information {
     my ($self) = @_;
-    foreach my $tu (@{$self->{trip_updates_array}}) {
+    foreach my $tu ($self->get_trip_update_list()) {
 	my $ns = $tu->{next_stop};
 	if ($ns) {
 	    $self->populate_stop_time_update($tu, $ns);
@@ -612,7 +676,95 @@ sub populate_stops {
     }
 }
 
-sub realtime_status {
+sub realtime_status_data {
+    my ($self, $geo_gtfs_agency_name, %args) = @_;
+    my $gtfs2 = $self;
+    my $stage = $args{stage} // 9999;
+    if (!$args{nofetch}) {
+	$gtfs2->update_realtime($geo_gtfs_agency_name);
+    }
+
+    my $o = $gtfs2->get_all_data($geo_gtfs_agency_name);
+    if ($stage < 1) {
+	return $o;
+    }
+    $gtfs2->flatten_vehicle_positions($geo_gtfs_agency_name);
+    $gtfs2->flatten_trip_updates($geo_gtfs_agency_name);
+    if ($stage < 2) {
+	return $o;
+    }
+    $gtfs2->consolidate_flattened_vehicle_records_into_trip_update_records($geo_gtfs_agency_name);
+    if ($stage < 3) {
+	return $o;
+    }
+    $gtfs2->mark_as_of_times();
+    $gtfs2->cull_crappy_consolidated_update_records($geo_gtfs_agency_name);
+    $gtfs2->populate_trip_and_route_info($geo_gtfs_agency_name);
+    $gtfs2->mark_next_coming_stops($geo_gtfs_agency_name);
+    if ($args{limit_stop_time_updates}) {
+	$gtfs2->remove_most_stop_time_update_data();
+    }
+    if ($stage < 4) {
+	return $o;
+    }
+    $gtfs2->populate_stop_information();
+    return $o;
+}
+
+sub print_realtime_status_raw {
+    my ($self, $geo_gtfs_agency_name) = @_;
+    my $o = $self->realtime_status_data($geo_gtfs_agency_name,
+					limit_stop_time_updates => 1);
+    print(Dumper($o));
+}
+
+sub print_realtime_status {
+    my ($self, $geo_gtfs_agency_name) = @_;
+    my $o = $self->realtime_status_data($geo_gtfs_agency_name,
+					limit_stop_time_updates => 1);
+
+    my @tu = $self->get_sorted_trip_updates();
+
+    print("Coach Route                                                                               Stop                                  SCHDULED Realtime    \n");
+    print("No.   No.   Route Description                Headsign                           As of      Seq Next Stop Location               Time     Time     Dly\n");
+    print("----- ----- -------------------------------- --------------------------------   --------   --- -------------------------------- -------- -------- ---\n");
+
+    foreach my $tu (@tu) {
+	my $as_of = $tu->{as_of};
+	my $stu = $tu->{next_stop};
+
+	my $dep_time        = eval { $stu->{dep_time} };
+	my $next_stop_name  = eval { $stu->{stop_name} };
+	my $next_stop_delay = eval { $stu->{delay} };
+	for ($next_stop_delay) {
+	    if (defined $_) {
+		$_ = int($_ / 60 + 0.5);
+	    }
+	}
+	my $realtime_time = eval { $stu->{realtime_time} };
+
+	my $fmt_as_of         = $as_of         && eval { strftime("%H:%M:%S", localtime($as_of        )) } // "-";
+	my $fmt_realtime_time = $realtime_time && eval { strftime("%H:%M:%S", localtime($realtime_time)) } // "-";
+	my $scheduled_time = eval { $stu->{scheduled_time} };
+
+	printf("%-5s %5s %-32.32s %-32.32s   %-8s   %3s %-32.32s %-8s %-8s %3s\n",
+	       $tu->{label} // "-",
+	       $tu->{route_short_name} // "-",
+	       $tu->{route_long_name} // "-",
+	       $tu->{trip_headsign} // "-",
+	       
+	       $fmt_as_of,
+	       
+	       $tu->{stop_sequence} // "",
+	       $next_stop_name // "-",
+	       $scheduled_time // "-",
+	       $fmt_realtime_time,
+	       $next_stop_delay // "",
+	      );
+    }
+}
+
+sub realtime_status_old {
     my ($self, $geo_gtfs_agency_name, %args) = @_;
     my $geo_gtfs_agency_id =
       $self->{geo_gtfs_agency_id} =
@@ -706,35 +858,39 @@ sub realtime_status {
     }
 }
 
-sub sanity_check {
-    my ($self, $geo_gtfs_agency_id);
-    my %vp_trip_id;
-    my %vp_vehicle_label;
-    foreach my $vp (@$vp_array) {
-	my $trip_id       = eval { $vp->{trip}->{trip_id} };
-	my $vehicle_label = eval { $vp->{vehicle}->{label} };
-	if (exists $vp_trip_id{$trip_id}) {
-	    warn("More than one vp record for trip_id = $trip_id\n");
-	}
-	if (exists $vp_vehicle_label{$vehicle_label}) {
-	    warn("More than one vp record for vehicle_label = $vehicle_label\n");
-	}
-	$vp_trip_id{$trip_id} = $vp;
-	$vp_vehicle_label{$vehicle_label} = $vp;
-    }
-    foreach my $tu (@$tu_array) {
-	my $trip_id       = eval { $tu->{trip}->{trip_id} };
-	my $vehicle_label = eval { $tu->{vehicle}->{label} };
-	if (exists $tu_trip_id{$trip_id}) {
-	    warn("More than one tu record for trip_id = $trip_id\n");
-	}
-	if (exists $tu_vehicle_label{$vehicle_label}) {
-	    warn("More than one tu record for vehicle_label = $vehicle_label\n");
-	}
-	$tu_trip_id{$trip_id} = $tu;
-	$tu_vehicle_label{$vehicle_label} = $tu;
-    }
-}
+# sub sanity_check {
+#     my ($self, $geo_gtfs_agency_id);
+    
+#     my %vp_trip_id;
+#     my %vp_vehicle_label;
+
+#     foreach my $vp (@$vp_array) {
+# 	my $trip_id       = eval { $vp->{trip}->{trip_id} };
+# 	my $vehicle_label = eval { $vp->{vehicle}->{label} };
+# 	if (exists $vp_trip_id{$trip_id}) {
+# 	    warn("More than one vp record for trip_id = $trip_id\n");
+# 	}
+# 	if (exists $vp_vehicle_label{$vehicle_label}) {
+# 	    warn("More than one vp record for vehicle_label = $vehicle_label\n");
+# 	}
+# 	$vp_trip_id{$trip_id} = $vp;
+# 	$vp_vehicle_label{$vehicle_label} = $vp;
+#     }
+
+#     foreach my $tu (@$tu_array) {
+# 	my $trip_id       = eval { $tu->{trip}->{trip_id} };
+# 	my $vehicle_label = eval { $tu->{vehicle}->{label} };
+# 	if (exists $tu_trip_id{$trip_id}) {
+# 	    warn("More than one tu record for trip_id = $trip_id\n");
+# 	}
+# 	if (exists $tu_vehicle_label{$vehicle_label}) {
+# 	    warn("More than one tu record for vehicle_label = $vehicle_label\n");
+# 	}
+# 	$tu_trip_id{$trip_id} = $tu;
+# 	$tu_vehicle_label{$vehicle_label} = $tu;
+#     }
+
+# }
 
 sub get_useful_realtime_status_info {
     my ($self, $geo_gtfs_agency_id, $vp_array, $tu_array, $alerts_array) = @_;
@@ -923,7 +1079,7 @@ sub get_useful_realtime_status_info {
     }
 
     @info = (map { $_->[0] }
-	       sort { _route_id_sort($a->[1], $b->[1]) || $a->[2] <=> $b->[2] }
+	       sort { _route_id_cmp($a->[1], $b->[1]) || $a->[2] <=> $b->[2] }
 		 map { [$_,
 			$_->{route_id} // "",
 			$_->{direction_id} // 0] }
@@ -938,14 +1094,14 @@ sub get_useful_realtime_status_info {
     };
 }
 
-sub _route_id_sort {
+sub _route_id_cmp {
     my ($stringA, $stringB) = @_;
     if ($stringA =~ m{\d+}) {
 	my ($prefixA, $numberA, $suffixA) = ($`, $&, $');
 	if ($stringB =~ m{\d+}) {
 	    my ($prefixB, $numberB, $suffixB) = ($`, $&, $');
 	    if ($prefixA eq $prefixB) {
-		return ($numberA <=> $numberB) || _route_id_sort($suffixA, $suffixB);
+		return ($numberA <=> $numberB) || _route_id_cmp($suffixA, $suffixB);
 	    }
 	}
     }
