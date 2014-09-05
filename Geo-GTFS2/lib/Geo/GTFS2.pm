@@ -601,7 +601,7 @@ sub populate_stop_information {
     }
 }
 
-sub realtime_status_data {
+sub get_realtime_status_data {
     my ($self, %args) = @_;
     my $gtfs2 = $self;
     my $stage = $args{stage} // 9999;
@@ -638,13 +638,13 @@ sub realtime_status_data {
 
 sub print_realtime_status_raw {
     my ($self) = @_;
-    my $o = $self->realtime_status_data(limit_stop_time_updates => 1);
+    my $o = $self->get_realtime_status_data(limit_stop_time_updates => 1);
     print(Dumper($o));
 }
 
 sub print_realtime_status {
     my ($self) = @_;
-    my $o = $self->realtime_status_data(limit_stop_time_updates => 1);
+    my $o = $self->get_realtime_status_data(limit_stop_time_updates => 1);
 
     my @tu = $self->get_sorted_trip_updates();
 
