@@ -30,21 +30,20 @@ use List::MoreUtils qw(all);
 use POSIX qw(strftime floor uname);
 use Text::CSV;
 
-use fields qw(dir
+use fields qw(dir http_cache_dir
 	      sqlite_filename
-	      dbh
+	      dbh db
 	      ua
 	      magic
-	      http_cache_dir
-	      gtfs_realtime_proto
 	      json
+
+	      gtfs_realtime_proto
 	      gtfs_realtime_protocol_pulled
-	      db
 
 	      vehicle_positions
 	      vehicle_positions_by_trip_id
-	      trip_updates
 	      vehicle_positions_array
+	      trip_updates
 	      trip_updates_array
 	      realtime_feed
 	      header
@@ -53,10 +52,8 @@ use fields qw(dir
 	      geo_gtfs_agency_name
 	      geo_gtfs_agency_id
 	      geo_gtfs_feed_id
-	      geo_gtfs_feed_instance_id
 	      geo_gtfs_realtime_feed_id
-	      geo_gtfs_realtime_feed_instance_id
-	    );
+	      geo_gtfs_realtime_feed_instance_id);
 
 sub new {
     my ($class, %args) = @_;
@@ -242,16 +239,15 @@ sub process_protocol_buffers {
 	warn("Done.\n");
     }
 
-    my $geo_gtfs_realtime_feed_id =
-      $self->{geo_gtfs_realtime_feed_id} =
-	$self->db->select_or_insert_geo_gtfs_realtime_feed_id($self->{geo_gtfs_agency_id}, $url, $feed_type);
-    my $geo_gtfs_realtime_feed_instance_id =
-      $self->{geo_gtfs_realtime_feed_instance_id} =
-	$self->db->select_or_insert_geo_gtfs_realtime_feed_instance_id($geo_gtfs_realtime_feed_id,
-								       $rel_pb_filename,
-								       $retrieved,
-								       $last_modified,
-								       $header_timestamp);
+    $self->{geo_gtfs_realtime_feed_id} =
+      $self->db->select_or_insert_geo_gtfs_realtime_feed_id($self->{geo_gtfs_agency_id}, $url, $feed_type);
+
+    $self->{geo_gtfs_realtime_feed_instance_id} =
+      $self->db->select_or_insert_geo_gtfs_realtime_feed_instance_id($self->{geo_gtfs_realtime_feed_id},
+								     $rel_pb_filename,
+								     $retrieved,
+								     $last_modified,
+								     $header_timestamp);
 }
 
 sub update_realtime {
@@ -803,15 +799,14 @@ sub process_gtfs_feed {
     }
     my @members = $zip->members();
 
-    my $geo_gtfs_feed_id =
-      $self->{geo_gtfs_feed_id} =
-	$self->db->select_or_insert_geo_gtfs_feed_id($self->{geo_gtfs_agency_id}, $url);
+    $self->{geo_gtfs_feed_id} =
+      $self->db->select_or_insert_geo_gtfs_feed_id($self->{geo_gtfs_agency_id}, $url);
+
     my $geo_gtfs_feed_instance_id =
-      $self->{geo_gtfs_feed_instance_id} =
-	$self->db->select_or_insert_geo_gtfs_feed_instance_id($geo_gtfs_feed_id,
-							      $rel_zip_filename,
-							      $retrieved,
-							      $last_modified);
+      $self->db->select_or_insert_geo_gtfs_feed_instance_id($self->{geo_gtfs_feed_id},
+							    $rel_zip_filename,
+							    $retrieved,
+							    $last_modified);
 
     my $sth;
 
