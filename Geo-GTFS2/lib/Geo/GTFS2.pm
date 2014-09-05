@@ -272,44 +272,6 @@ sub list_latest_realtime_feeds {
     }
 }
 
-sub get_records {
-    my ($self, $feed_type) = @_;
-
-    my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($self->{geo_gtfs_agency_id});
-    my %instances = map { ($_->{feed_type}, $_) } @instances;
-    my @results;
-    my $process_entity = sub {
-	my ($e) = @_;
-	my $record = $e->{$feed_type};
-	return unless $record;
-	$record->{header_timestamp} = $e->{header_timestamp} if $e;
-	# $record->{source_feed_type} = $e->{source_feed_type} if $e;
-	push(@results, $record);
-    };
-
-    my $source_feed_type;
-    my $i = $instances{all};
-    if ($i) {
-	$source_feed_type = "all";
-    } else {
-	$i = $instances{$feed_type};
-	$source_feed_type = $feed_type;
-    }
-
-    if ($i) {
-	my $o = $self->{realtime_feed}->{$feed_type} = $self->read_realtime_feed($i->{filename});
-	$self->{header} = $o->{header} if $feed_type eq "all";
-	$self->{headers}->{$feed_type} = $o->{header};
-	my $header_timestamp = eval { $o->{header}->{timestamp} };
-	foreach my $e (@{$o->{entity}}) {
-	    $e->{header_timestamp} = $header_timestamp if defined $header_timestamp;
-	    # $e->{source_feed_type} = $source_feed_type;
-	    $process_entity->($e);
-	}
-    }
-    return @results;
-}
-
 sub get_all_data {
     my ($self) = @_;
 
