@@ -646,13 +646,11 @@ sub print_realtime_status {
     my ($self) = @_;
     my $o = $self->get_realtime_status_data(limit_stop_time_updates => 1);
 
-    my @tu = $self->get_sorted_trip_updates();
+    print("                                                                                                   Stop                                  SCHDULED Realtime    \n");
+    print("Coach Route                                  Trip ID Headsign                           As of      Seq. Next Stop Location               Time     Time     Dly\n");
+    print("----- ----- -------------------------------- ------- --------------------------------   --------   ---- -------------------------------- -------- -------- ---\n");
 
-    print("                                                                                          Stop                                  SCHDULED Realtime    \n");
-    print("Coach Route                                  Headsign                           As of      Seq Next Stop Location               Time     Time     Dly\n");
-    print("----- ----- -------------------------------- --------------------------------   --------   --- -------------------------------- -------- -------- ---\n");
-
-    foreach my $tu (@tu) {
+    foreach my $tu ($self->get_sorted_trip_updates()) {
 	my $as_of = $tu->{as_of};
 	my $stu = $tu->{next_stop};
 
@@ -670,10 +668,15 @@ sub print_realtime_status {
 	my $fmt_realtime_time = $realtime_time && eval { strftime("%H:%M:%S", localtime($realtime_time)) } // "-";
 	my $scheduled_time = eval { $stu->{scheduled_time} };
 
-	printf("%-5s %5s %-32.32s %-32.32s   %-8s   %3s %-32.32s %-8s %-8s %3s\n",
+	for ($stu->{stop_sequence}) {
+	    $_ = "#$_" if defined $_;
+	}
+
+	printf("%-5s %5s %-32.32s %-7s %-32.32s   %-8s   %4s %-32.32s %-8s %-8s %3s\n",
 	       $tu->{label} // "-",
 	       $tu->{route_short_name} // "-",
 	       $tu->{route_long_name} // "-",
+	       $tu->{trip_id},
 	       $tu->{trip_headsign} // "-",
 	       $fmt_as_of,
 	       $stu->{stop_sequence} // "",
@@ -761,14 +764,8 @@ sub process_gtfs_feed {
     }
     my @members = $zip->members();
 
-    $self->{geo_gtfs_feed_id} =
-      $self->db->select_or_insert_geo_gtfs_feed_id($self->{geo_gtfs_agency_id}, $url);
-
-    my $geo_gtfs_feed_instance_id =
-      $self->db->select_or_insert_geo_gtfs_feed_instance_id($self->{geo_gtfs_feed_id},
-							    $rel_zip_filename,
-							    $retrieved,
-							    $last_modified);
+    $self->{geo_gtfs_feed_id} = $self->db->select_or_insert_geo_gtfs_feed_id($self->{geo_gtfs_agency_id}, $url);
+    my $geo_gtfs_feed_instance_id = $self->db->select_or_insert_geo_gtfs_feed_instance_id($self->{geo_gtfs_feed_id}, $rel_zip_filename, $retrieved, $last_modified);
 
     my $sth;
 
@@ -799,8 +796,7 @@ sub process_gtfs_feed {
 	$self->dbh->do("delete from $table_name where geo_gtfs_feed_instance_id = ?",
 		       {}, $geo_gtfs_feed_instance_id);
 
-	my $sql = sprintf("insert into $table_name(geo_gtfs_feed_instance_id, %s) " .
-			    "values(?, %s);",
+	my $sql = sprintf("insert into $table_name(geo_gtfs_feed_instance_id, %s) values(?, %s);",
 			  join(", ", @$fields),
 			  join(", ", ("?") x scalar(@$fields)));
 	$sth = $self->dbh->prepare($sql);
@@ -908,9 +904,6 @@ sub run_cmdline {
 	$self->help_cmdline();
     } elsif ($args[0] eq "sqlite") {
 	$self->exec_sqlite_utility();
-    } elsif (scalar(@args) >= 2 && 
-	       $self->is_agency_name($args[0])
-       ) {
     } else {
 	die("Unknown command: $args[0]\n");
     }
