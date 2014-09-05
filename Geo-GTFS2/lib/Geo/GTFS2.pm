@@ -851,63 +851,8 @@ sub is_agency_name {
 }
 
 ###############################################################################
-# COMMAND LINE UTILITY FUNCTIONALITY
+# MISCELLANY
 ###############################################################################
-
-sub help_cmdline { print(<<"END"); }
-  gtfs2 ridetarc.org <URL> ...
-  gtfs2 ridetarc.org update [<URL> ...]
-  gtfs2 ridetarc.org update-realtime
-  gtfs2 ridetarc.org realtime-status
-  gtfs2 list-agencies
-  gtfs2 ridetarc.org list-routes
-END
-
-sub run_cmdline {
-    my ($self, @args) = @_;
-    if (!@args) {
-	$self->help_cmdline();
-    } elsif ($self->is_agency_name($args[0])) {
-
-	$self->set_agency(shift(@args));
-
-	if (!@args) {
-	    printf("%8d %s\n", $self->{geo_gtfs_agency_id}, $self->{geo_gtfs_agency_name});
-	} elsif ($self->is_url($args[0])) {
-	    foreach my $arg (@args) {
-		if ($self->is_url($arg)) {
-		    $self->process_url($arg);
-		} else {
-		    warn("Unknown argument: $arg\n");
-		}
-	    }
-	} elsif ($args[0] eq "update") {
-	    $self->update();
-	} elsif ($args[0] eq "list-realtime-feeds") {
-	    $self->list_realtime_feeds();
-	} elsif ($args[0] eq "update-realtime") {
-	    $self->update_realtime();
-	} elsif ($args[0] eq "realtime-status") {
-	    $self->realtime_status();
-	} elsif ($args[0] eq "realtime-summary") {
-	    $self->realtime_status(summary => 1);
-	} elsif ($args[0] eq "realtime-raw") {
-	    $self->realtime_status(raw => 1);
-	} elsif ($args[0] eq "list-routes") {
-	    $self->list_routes();
-	} elsif ($args[0] eq "sqlite") {
-	    $self->exec_sqlite_utility();
-	}
-    } elsif ($args[0] eq "list-agencies") {
-	$self->list_agencies();
-    } elsif ($args[0] eq "help") {
-	$self->help_cmdline();
-    } elsif ($args[0] eq "sqlite") {
-	$self->exec_sqlite_utility();
-    } else {
-	die("Unknown command: $args[0]\n");
-    }
-}
 
 sub exec_sqlite_utility {
     my ($self) = @_;
