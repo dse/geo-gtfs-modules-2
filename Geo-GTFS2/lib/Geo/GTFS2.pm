@@ -31,34 +31,41 @@ use Text::CSV;
 # [1] File::MMagic best detects .zip files, and allows us to add magic
 # for Google Protocol Buffers files.
 
-use fields qw(dir http_cache_dir
-	      sqlite_filename
-	      dbh db
-	      ua
-	      magic
-	      json
+use constant IGNORE_FIELDS => 1;
 
-	      gtfs_realtime_proto
-	      gtfs_realtime_protocol_pulled
+BEGIN {
+    if (!IGNORE_FIELDS) {
+	require fields;
+	import fields qw(dir http_cache_dir
+			 sqlite_filename
+			 dbh db
+			 ua
+			 magic
+			 json
 
-	      vehicle_positions
-	      vehicle_positions_by_trip_id
-	      vehicle_positions_array
-	      trip_updates
-	      trip_updates_array
-	      realtime_feed
-	      header
-	      headers
+			 gtfs_realtime_proto
+			 gtfs_realtime_protocol_pulled
 
-	      geo_gtfs_agency_name
-	      geo_gtfs_agency_id
-	      geo_gtfs_feed_id
-	      geo_gtfs_realtime_feed_id
-	      geo_gtfs_realtime_feed_instance_id);
+			 vehicle_positions
+			 vehicle_positions_by_trip_id
+			 vehicle_positions_array
+			 trip_updates
+			 trip_updates_array
+			 realtime_feed
+			 header
+			 headers
+
+			 geo_gtfs_agency_name
+			 geo_gtfs_agency_id
+			 geo_gtfs_feed_id
+			 geo_gtfs_realtime_feed_id
+			 geo_gtfs_realtime_feed_instance_id);
+    }
+}
 
 sub new {
     my ($class, %args) = @_;
-    my $self = fields::new($class);
+    my $self = IGNORE_FIELDS ? bless({}, $class) : fields::new($class);
     $self->init(%args);
     return $self;
 }
@@ -95,6 +102,16 @@ sub set_agency {
     $self->{geo_gtfs_agency_name} = $agency_name;
     $self->{geo_gtfs_agency_id} =
       $self->db->select_or_insert_geo_gtfs_agency_id($agency_name);
+}
+
+sub set_agency_id {
+    my ($self, $agency_id) = @_;
+    $self->{geo_gtfs_agency_id} = $agency_id;
+    my $agency = $self->db->select_geo_gtfs_agency_by_id($agency_id);
+    if (!$agency) {
+	die("No agency with id: $agency_id\n");
+    }
+    $self->{geo_gtfs_agency_name} = $agency->{name};
 }
 
 sub process_url {
@@ -249,16 +266,199 @@ sub process_protocol_buffers {
 								     $retrieved,
 								     $last_modified,
 								     $header_timestamp);
+
+    return $o;
 }
 
-sub update_realtime {
-    my ($self) = @_;
+###############################################################################
 
+sub fetch_all_realtime_data {
+    my ($self) = @_;
+    my @feeds = $self->db->get_geo_gtfs_realtime_feeds($self->{geo_gtfs_agency_id});
+    my %feeds = map { ($_->{feed_type} => $_) } @feeds;
+    if ($feeds{all}) {
+	my $feed = $feeds{all};
+	my $url = $feed->{url};
+	$self->process_url($url);
+    } else {
+	$self->fetch_all_realtime_feeds();
+    }
+}
+
+sub fetch_all_realtime_feeds {
+    my ($self) = @_;
     my @feeds = $self->db->get_geo_gtfs_realtime_feeds($self->{geo_gtfs_agency_id});
     foreach my $feed (@feeds) {
 	my $url = $feed->{url};
 	$self->process_url($url);
     }
+}
+
+sub fetch_realtime_vehicle_position_feed {
+    my ($self) = @_;
+    my $feed = $self->db->get_geo_gtfs_realtime_feed_by_type($self->{geo_gtfs_agency_id}, "positions");
+    my $url = $feed->{url};
+    $self->process_url($url);
+}
+
+sub fetch_realtime_all_data_feed {
+    my ($self) = @_;
+    my $feed = $self->db->get_geo_gtfs_realtime_feed_by_type($self->{geo_gtfs_agency_id}, "all");
+    my $url = $feed->{url};
+    return $self->process_url($url);
+}
+
+sub get_cooked_realtime_vehicle_position_feed {
+    my ($self) = @_;
+    my $o = $self->fetch_realtime_vehicle_position_feed;
+    my @v;
+    foreach my $e (@{$o->{entity}}) {
+	my $v = $e->{vehicle};
+	push(@v, $v);
+    }
+    $o->{vehicle} = \@v;
+    delete $o->{entity};
+    return $o;
+}
+
+sub get_trip_details_feed {
+    my ($self, $trip_id) = @_;
+    my $o = $self->fetch_realtime_all_data_feed();
+    my @t = grep { eval { $_->{trip}->{trip_id} eq $trip_id } } map { $_->{trip_update} || () } @{$o->{entity}};
+    my @v = grep { eval { $_->{trip}->{trip_id} eq $trip_id } } map { $_->{vehicle}     || () } @{$o->{entity}};
+    foreach my $t (@t) {
+	$self->flatten_trip_update_record($t);
+    }
+    foreach my $v (@v) {
+	$self->flatten_vehicle_record($v);
+    }
+    delete $o->{entity};
+    if (scalar(@t) > 1) {
+	$o->{trip_update} = \@t;
+    } elsif (scalar(@t) == 1) {
+	$o->{trip_update} = $t[0];
+    }
+    if (scalar(@v) > 1) {
+	$o->{vehicle} = \@v;
+    } elsif (scalar(@v) == 1) {
+	$o->{vehicle} = $v[0];
+    }
+    return $o;
+}
+
+sub flatten_vehicle_record {
+    my ($self, $v) = @_;
+    my $trip_id = eval { delete $v->{trip}->{trip_id} };
+    my $lat     = eval { delete $v->{position}->{latitude} };
+    my $lon     = eval { delete $v->{position}->{longitude} };
+    my $label   = eval { delete $v->{vehicle}->{label} };
+    delete $v->{trip}     if !scalar(keys(%{$v->{trip}}));
+    delete $v->{position} if !scalar(keys(%{$v->{position}}));
+    delete $v->{vehicle}  if !scalar(keys(%{$v->{vehicle}}));
+    $v->{trip_id} = $trip_id if defined $trip_id;
+    $v->{lat}     = $lat     if defined $lat;
+    $v->{lon}     = $lon     if defined $lon;
+    $v->{label}   = $label   if defined $label;
+}
+
+sub flatten_trip_update_record {
+    my ($self, $t) = @_;
+    my $trip_id    = eval { delete $t->{trip}->{trip_id} };
+    my $label      = eval { delete $t->{vehicle}->{label} };
+    my $route_id   = eval { delete $t->{trip}->{route_id} };
+    my $start_time = eval { delete $t->{trip}->{start_time} };
+    my $start_date = eval { delete $t->{trip}->{start_date} };
+    delete $t->{trip}     if !scalar(keys(%{$t->{trip}}));
+    delete $t->{vehicle}  if !scalar(keys(%{$t->{vehicle}}));
+    $t->{trip_id}  = $trip_id  if defined $trip_id;
+    $t->{label}    = $label    if defined $label;
+    $t->{route_id} = $route_id if defined $route_id;
+    $t->{start_time} = $start_time if defined $start_time;
+    $t->{start_date} = $start_date if defined $start_date;
+    foreach my $stu (eval { @{$t->{stop_time_update}} }) {
+	$self->flatten_stop_time_update_record($stu);
+    }
+}
+
+sub populate_trip_update_record {
+    my ($self, $t) = @_;
+    my $route_id = $t->{route_id};
+    my $start_date = $t->{start_date};
+    if (defined $start_date && defined $route_id) {
+	my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $sd);
+	my $trip_record = $self->db->get_gtfs_trip($geo_gtfs_feed_instance_id, $t->{trip_id});
+	my $route_record =
+	  $self->db->get_gtfs_route($geo_gtfs_feed_instance_id, $route_id);
+	$v->{route_short_name} = $route_record->{route_short_name};
+	$v->{route_long_name} = $route_record->{route_long_name};
+    }
+}
+
+sub flatten_stop_time_update_record {
+    my ($self, $stu) = @_;
+    my $dep_time      = eval { delete $stu->{departure}->{time} };
+    my $arr_time      = eval { delete $stu->{arrival}->{time} };
+    my $dep_delay     = eval { delete $stu->{departure}->{delay} };
+    my $arr_delay     = eval { delete $stu->{arrival}->{delay} };
+    my $realtime_time = $arr_time // $dep_time;
+    my $delay         = $arr_delay // $dep_delay;
+    foreach my $k (qw(departure arrival)) {
+	delete $stu->{$k} if exists $stu->{$k} && !scalar(keys(%{$stu->{$k}}));
+    }
+    $stu->{realtime_time} = $realtime_time if defined $realtime_time;
+    if (defined $delay) {
+	$stu->{delay}         = $delay;
+	$stu->{delay_minutes} = int($delay / 60 + 0.5);
+    }
+}
+
+sub get_vehicle_feed {
+    my ($self) = @_;
+    my $o = $self->fetch_realtime_all_data_feed();
+    my @t;
+    my @v;
+    foreach my $e (@{delete $o->{entity}}) {
+	my $v = delete $e->{vehicle};
+	my $t = delete $e->{trip_update};
+	push(@v, $v) if $v;
+	push(@t, $t) if $t;
+    }
+    foreach my $v (@v) {
+	$self->flatten_vehicle_record($v);
+    }
+    foreach my $t (@t) {
+	$self->flatten_trip_update_record($t);
+    }
+    my %vv = map { (defined $_->{label}   ? ($_->{label}   => $_) : ()) } @v;
+    my %vt = map { (defined $_->{trip_id} ? ($_->{trip_id} => $_) : ()) } @v;
+    my %tv = map { (defined $_->{label}   ? ($_->{label}   => $_) : ()) } @t;
+    my %tt = map { (defined $_->{trip_id} ? ($_->{trip_id} => $_) : ()) } @t;
+    my $now = time();
+    foreach my $v (@v) {
+	my $t = eval { $tt{$v->{trip_id}} } // eval { $tv{$v->{label}} };
+	next unless $t;
+	my $route_id = $t->{route_id};
+	$v->{route_id} = $route_id if defined $route_id;
+	my $start_date = $t->{start_date};
+	if (defined $start_date) {
+	    my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $start_date);
+	    my $trip_record = $self->db->get_gtfs_trip($geo_gtfs_feed_instance_id, $t->{trip_id});
+	    $v->{trip_headsign} = $trip_record->{trip_headsign};
+	    if (defined $route_id) {
+		my $route_record =
+		  $self->db->get_gtfs_route($geo_gtfs_feed_instance_id, $route_id);
+		$v->{route_short_name} = $route_record->{route_short_name};
+		$v->{route_long_name} = $route_record->{route_long_name};
+	    }
+	}
+	$v->{timestamp_fmt} = strftime("%a, %d %b %Y %H:%M:%S %z", localtime($v->{timestamp}));
+	if ($v->{timestamp} < $now - 3600) {
+	    $v->{_exclude_} = 1;
+	}
+    }
+    $o->{vehicle}     = [ grep { !$_->{_exclude_} } @v ];
+    $o->{trip_update} = [ @t ];
+    return $o;
 }
 
 sub list_latest_realtime_feeds {
@@ -273,7 +473,7 @@ sub list_latest_realtime_feeds {
     }
 }
 
-sub get_all_data {
+sub get_latest_fetched_data {
     my ($self) = @_;
 
     my @instances = $self->db->get_latest_geo_gtfs_realtime_feed_instances($self->{geo_gtfs_agency_id});
@@ -281,50 +481,69 @@ sub get_all_data {
     my $all = $instances{all};
     return unless $all;
 
+    my @instances_to_check;
+    if ($instances{all}) {
+	@instances_to_check = ($instances{all});
+    } else {
+	@instances_to_check = @instances;
+    }
+
     $self->{vehicle_positions} = {};
     $self->{vehicle_positions_by_trip_id} = {};
     $self->{trip_updates} = {};
     $self->{vehicle_positions_array} = [];
     $self->{trip_updates_array} = [];
 
-    my $o = $self->{realtime_feed}->{all} = $self->read_realtime_feed($all->{filename});
-    my $header_timestamp = eval { $o->{header}->{timestamp} };
-    $self->{header} = $o->{header};
-    $self->{headers}->{all} = $o->{header};
-    foreach my $e (@{$o->{entity}}) {
-	my $vp = $e->{vehicle};
-	my $tu = $e->{trip_update};
-	if ($vp) {
-	    eval {
-		$vp->{header_timestamp} = $header_timestamp if defined $header_timestamp;
-		my $label   = eval { $vp->{vehicle}->{label} };
-		my $trip_id = eval { $vp->{trip}->{trip_id} };
+    my @o;
 
-		if (defined $label || defined $trip_id) {
-		    $self->{vehicle_positions}->{$label} = $vp if defined $label;
-		    $self->{vehicle_positions_by_trip_id}->{$trip_id} = $vp if defined $trip_id;
-		    $vp->{_consolidate_} = 1;
+    foreach my $instance (@instances) {
+	my $o = $self->read_realtime_feed($instance->{filename});
+	if ($instance->{feed_type} eq "all") {
+	    $self->{realtime_feed}->{all} = $o;
+	}
+	my $header_timestamp = eval { $o->{header}->{timestamp} };
+	$self->{header} = $o->{header};
+	$self->{headers}->{all} = $o->{header};
+	foreach my $e (@{$o->{entity}}) {
+	    my $vp = $e->{vehicle};
+	    my $tu = $e->{trip_update};
+	    if ($vp) {
+		eval {
+		    $vp->{header_timestamp} = $header_timestamp if defined $header_timestamp;
+		    my $label   = eval { $vp->{vehicle}->{label} };
+		    my $trip_id = eval { $vp->{trip}->{trip_id} };
+
+		    if (defined $label || defined $trip_id) {
+			$self->{vehicle_positions}->{$label} = $vp if defined $label;
+			$self->{vehicle_positions_by_trip_id}->{$trip_id} = $vp if defined $trip_id;
+			$vp->{_consolidate_} = 1;
+		    }
+		    push(@{$self->{vehicle_positions_array}}, $vp);
 		}
-		push(@{$self->{vehicle_positions_array}}, $vp);
+	    }
+	    if ($tu) {
+		eval {
+		    $tu->{header_timestamp} = $header_timestamp if defined $header_timestamp;
+		    $self->{trip_updates}->{$tu->{trip}->{trip_id}} = $tu;
+		    push(@{$self->{trip_updates_array}}, $tu);
+		}
 	    }
 	}
-	if ($tu) {
-	    eval {
-		$tu->{header_timestamp} = $header_timestamp if defined $header_timestamp;
-		$self->{trip_updates}->{$tu->{trip}->{trip_id}} = $tu;
-		push(@{$self->{trip_updates_array}}, $tu);
-	    }
-	}
+	push(@o, $o);
     }
-    return $o;
+
+    if (wantarray) {
+	return @o;
+    }
+    return \@o;
 }
 
 sub process_010_flatten_vehicle_positions {
     my ($self) = @_;
     foreach my $vp (@{$self->{vehicle_positions_array}}) {
 	eval { $vp->{trip_id}   = delete $vp->{trip}->{trip_id}       if defined $vp->{trip}->{trip_id};       };
-	eval { $vp->{latitude}  = delete $vp->{position}->{latitude}  if defined $vp->{position}->{latitude};  };
-	eval { $vp->{longitude} = delete $vp->{position}->{longitude} if defined $vp->{position}->{longitude}; };
+	eval { $vp->{lat}       = delete $vp->{position}->{latitude}  if defined $vp->{position}->{latitude};  };
+	eval { $vp->{lon}       = delete $vp->{position}->{longitude} if defined $vp->{position}->{longitude}; };
 	eval { $vp->{label}     = delete $vp->{vehicle}->{label}      if defined $vp->{vehicle}->{label};      };
 	foreach my $k (qw(trip position vehicle)) {
 	    delete $vp->{$k} if exists $vp->{$k} && !scalar(keys(%{$vp->{$k}}));
@@ -341,20 +560,7 @@ sub process_020_flatten_trip_updates {
 	eval { $tu->{route_id}   = delete $tu->{trip}->{route_id}   if defined $tu->{trip}->{route_id};   };
 	eval { $tu->{label}      = delete $tu->{vehicle}->{label}   if defined $tu->{vehicle}->{label};   };
 	foreach my $stu (eval { @{$tu->{stop_time_update}} }) {
-	    my $dep_time      = eval { delete $stu->{departure}->{time} };
-	    my $arr_time      = eval { delete $stu->{arrival}->{time} };
-	    my $dep_delay     = eval { delete $stu->{departure}->{delay} };
-	    my $arr_delay     = eval { delete $stu->{arrival}->{delay} };
-	    my $realtime_time = $arr_time // $dep_time;
-	    my $delay         = $arr_delay // $dep_delay;
-	    foreach my $k (qw(departure arrival)) {
-		delete $stu->{$k} if exists $stu->{$k} && !scalar(keys(%{$stu->{$k}}));
-	    }
-	    $stu->{realtime_time} = $realtime_time if defined $realtime_time;
-	    if (defined $delay) {
-		$stu->{delay}         = $delay;
-		$stu->{delay_minutes} = int($delay / 60 + 0.5);
-	    }
+	    $self->flatten_stop_time_update_record($stu);
 	}
 	foreach my $k (qw(trip vehicle)) {
 	    delete $tu->{$k} if !scalar(keys(%{$tu->{$k}}));
@@ -607,36 +813,35 @@ sub process_090_populate_stop_information {
 
 sub get_realtime_status_data {
     my ($self, %args) = @_;
-    my $gtfs2 = $self;
     my $stage = $args{stage} // 9999;
     if (!$args{nofetch}) {
-	$gtfs2->update_realtime();
+	$self->fetch_all_realtime_data();
     }
 
-    my $o = $gtfs2->get_all_data();
+    my $o = $self->get_latest_fetched_data();
     if ($stage < 1) {
 	return $o;
     }
-    $gtfs2->process_010_flatten_vehicle_positions();
-    $gtfs2->process_020_flatten_trip_updates();
+    $self->process_010_flatten_vehicle_positions();
+    $self->process_020_flatten_trip_updates();
     if ($stage < 2) {
 	return $o;
     }
-    $gtfs2->process_030_consolidate_records();
+    $self->process_030_consolidate_records();
     if ($stage < 3) {
 	return $o;
     }
-    $gtfs2->process_040_mark_as_of_times();
-    $gtfs2->process_050_remove_turds();
-    $gtfs2->process_060_populate_trip_and_route_info();
-    $gtfs2->process_070_mark_next_coming_stops();
+    $self->process_040_mark_as_of_times();
+    $self->process_050_remove_turds();
+    $self->process_060_populate_trip_and_route_info();
+    $self->process_070_mark_next_coming_stops();
     if ($args{limit_stop_time_updates}) {
-	$gtfs2->process_080_remove_most_stop_time_update_data();
+	$self->process_080_remove_most_stop_time_update_data();
     }
     if ($stage < 4) {
 	return $o;
     }
-    $gtfs2->process_090_populate_stop_information();
+    $self->process_090_populate_stop_information();
     return $o;
 }
 
@@ -664,7 +869,7 @@ sub print_trip_status {
 
     printf("            Trip ID: %s\n", $trip_id);
     printf("Longitude, Latitude: %.6f, %.6f\n",
-	   $tu->{longitude}, $tu->{latitude});
+	   $tu->{lon}, $tu->{lat});
     printf("              Route: %s %s\n", $tu->{route_short_name}, $tu->{route_long_name});
     printf("        Destination: %s\n", $tu->{trip_headsign});
     printf("              As of: %s\n",  strftime("%Y-%m-%d %H:%M:%S %Z", localtime($tu->{as_of})));
@@ -693,12 +898,11 @@ sub print_realtime_status_raw {
     my ($self) = @_;
     my $o = $self->get_realtime_status_data(limit_stop_time_updates => 1);
     print(Dumper($o));
-
 }
 
 sub print_realtime_status {
     my ($self) = @_;
-    my $o = $self->get_realtime_status_data(limit_stop_time_updates => 1);
+    $self->get_realtime_status_data(limit_stop_time_updates => 1);
 
     print("                                                                                                   Stop                                  SCHDULED Realtime    \n");
     print("Coach Route                                  Trip ID Headsign                           As of      Seq. Next Stop Location               Time     Time     Dly\n");
@@ -762,6 +966,11 @@ sub read_realtime_feed {
     } else {
 	die("Cannot read $filename: $!\n");
     }
+}
+
+sub get_realtime_feeds {
+    my ($self) = @_;
+    return $self->db->get_geo_gtfs_realtime_feeds($self->{geo_gtfs_agency_id});
 }
 
 sub list_realtime_feeds {
@@ -878,6 +1087,17 @@ sub list_routes {
 ###############################################################################
 # AGENCIES
 ###############################################################################
+
+sub get_agencies {
+    my ($self) = @_;
+    my $sth = $self->dbh->prepare("select * from geo_gtfs_agency");
+    $sth->execute();
+    my @rows;
+    while (my $row = $sth->fetchrow_hashref()) {
+	push(@rows, $row);
+    }
+    return @rows;
+}
 
 sub list_agencies {
     my ($self) = @_;
