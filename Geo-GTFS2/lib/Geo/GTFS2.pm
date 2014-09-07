@@ -272,6 +272,8 @@ sub process_protocol_buffers {
 
 ###############################################################################
 
+###############################################################################
+
 sub fetch_all_realtime_data {
     my ($self) = @_;
     my @feeds = $self->db->get_geo_gtfs_realtime_feeds($self->{geo_gtfs_agency_id});
@@ -333,6 +335,9 @@ sub get_trip_details_feed {
 	$self->flatten_vehicle_record($v);
     }
     delete $o->{entity};
+    foreach my $t (@t) {
+	$self->populate_trip_update_record($t);
+    }
     if (scalar(@t) > 1) {
 	$o->{trip_update} = \@t;
     } elsif (scalar(@t) == 1) {
@@ -382,15 +387,18 @@ sub flatten_trip_update_record {
 
 sub populate_trip_update_record {
     my ($self, $t) = @_;
-    my $route_id = $t->{route_id};
+    my $route_id   = $t->{route_id};
     my $start_date = $t->{start_date};
+    my $trip_id    = $t->{trip_id};
     if (defined $start_date && defined $route_id) {
-	my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $sd);
-	my $trip_record = $self->db->get_gtfs_trip($geo_gtfs_feed_instance_id, $t->{trip_id});
-	my $route_record =
-	  $self->db->get_gtfs_route($geo_gtfs_feed_instance_id, $route_id);
-	$v->{route_short_name} = $route_record->{route_short_name};
-	$v->{route_long_name} = $route_record->{route_long_name};
+	my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $start_date);
+	my $trip_record = $self->db->get_gtfs_trip($geo_gtfs_feed_instance_id, $trip_id);
+	$t->{trip_headsign}    = $trip_record->{trip_headsign};
+	$t->{direction_id}     = $trip_record->{direction_id};
+	$t->{block_id}         = $trip_record->{block_id};
+	my $route_record = $self->db->get_gtfs_route($geo_gtfs_feed_instance_id, $route_id);
+	$t->{route_short_name} = $route_record->{route_short_name};
+	$t->{route_long_name}  = $route_record->{route_long_name};
     }
 }
 
@@ -410,6 +418,11 @@ sub flatten_stop_time_update_record {
 	$stu->{delay}         = $delay;
 	$stu->{delay_minutes} = int($delay / 60 + 0.5);
     }
+}
+
+sub populate_stop_time_update_record {
+    my ($self, $tu, $stu) = @_;
+    $self->process_090_populate_stop_time_update($tu, $stu);
 }
 
 sub get_vehicle_feed {
