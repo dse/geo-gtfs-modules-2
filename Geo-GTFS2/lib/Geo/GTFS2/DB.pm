@@ -426,6 +426,17 @@ sub get_geo_gtfs_realtime_feeds {
     return @rows;
 }
 
+sub get_geo_gtfs_realtime_feed_by_type {
+    my ($self, $geo_gtfs_agency_id, $feed_type) = @_;
+    my $sth = $self->dbh->prepare("select * from geo_gtfs_realtime_feed where geo_gtfs_agency_id = ? and feed_type = ?");
+    $sth->execute($geo_gtfs_agency_id, $feed_type);
+    my $row = $sth->fetchrow_hashref();
+    if (!$row) {
+	die("No $feed_type feed for agency id $geo_gtfs_agency_id.\n");
+    }
+    return $row;
+}
+
 sub get_latest_geo_gtfs_realtime_feed_instances {
     my ($self, $geo_gtfs_agency_id) = @_;
     my $sql = <<"END";
@@ -647,6 +658,17 @@ END
 ###############################################################################
 # AGENCIES
 ###############################################################################
+
+sub select_geo_gtfs_agency_by_id {
+    my ($self, $geo_gtfs_agency_id) = @_;
+    my $sth = $self->dbh->prepare("select * from geo_gtfs_agency where id = ?");
+    $sth->execute($geo_gtfs_agency_id);
+    my $row = $sth->fetchrow_hashref();
+    if (!$row) {
+	die("No agency with id: $geo_gtfs_agency_id\n");
+    }
+    return $row;
+}
 
 sub select_or_insert_geo_gtfs_agency_id {
     my ($self, $geo_gtfs_agency_name) = @_;

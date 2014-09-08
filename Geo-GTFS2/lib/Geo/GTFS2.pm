@@ -272,6 +272,284 @@ sub process_protocol_buffers {
 
 ###############################################################################
 
+sub get_vehicle_feed {
+    my ($self) = @_;
+    my $o = $self->fetch_realtime_all_data_feed();
+    my @t;
+    my @v;
+    foreach my $e (@{$o->{entity}}) {
+	my $v = $e->{vehicle};
+	my $t = $e->{trip_update};
+	push(@v, $v) if $v;
+	push(@t, $t) if $t;
+    }
+    foreach my $v (@v) {
+	$self->flatten_vehicle_record($v);
+    }
+    foreach my $t (@t) {
+	$self->flatten_trip_update_record($t);
+    }
+    my @combined = $self->get_combined_records(\@t, \@v);
+    foreach my $combined (@combined) {
+	my $stu_array = $combined->{stop_time_update};
+
+	if ($stu_array) {
+	    foreach my $stu (@$stu_array) {
+		$self->flatten_stop_time_update_record($stu);
+		$self->enhance_stop_time_update_record($stu);
+	    }
+	    $self->mark_expected_next_stop($combined);
+	    @$stu_array = grep { $_->{expected_next_stop} } @$stu_array;
+	    if (scalar(@$stu_array)) {
+		foreach my $stu (@$stu_array) {
+		    $self->enhance_timestamps_in($stu);
+		    $self->populate_stop_information($combined, $stu);
+		}
+		$combined->{next_stop} = $stu_array->[0];
+	    }
+	    delete $combined->{stop_time_update};
+	}
+
+	$self->populate_trip_and_route_info($combined);
+	$self->enhance_timestamps_in($combined);
+	$self->mark_combined_record_as_needed($combined);
+    }
+
+    @combined = map { [ $_, $_->{route_id} // 0, $_->{direction_id} // 0 ] } @combined;
+    @combined = sort { _route_id_cmp($a->[1], $b->[1]) || $a->[2] <=> $b->[2] } @combined;
+    @combined = map { $_->[0] } @combined;
+
+    return {
+	header  => $o->{header},
+	vehicle => \@combined
+       };
+}
+
+sub flatten_vehicle_record {
+    my ($self, $v) = @_;
+    my $trip_id = eval { delete $v->{trip}->{trip_id} };
+    my $latitude     = eval { delete $v->{position}->{latitude} };
+    my $longitude     = eval { delete $v->{position}->{longitude} };
+    my $label   = eval { delete $v->{vehicle}->{label} };
+    delete $v->{trip}     if !scalar(keys(%{$v->{trip}}));
+    delete $v->{position} if !scalar(keys(%{$v->{position}}));
+    delete $v->{vehicle}  if !scalar(keys(%{$v->{vehicle}}));
+    $v->{trip_id} = $trip_id if defined $trip_id;
+    $v->{latitude}     = $latitude     if defined $latitude;
+    $v->{longitude}     = $longitude     if defined $longitude;
+    $v->{label}   = $label   if defined $label;
+}
+
+sub flatten_trip_update_record {
+    my ($self, $t) = @_;
+    my $trip_id    = eval { delete $t->{trip}->{trip_id} };
+    my $label      = eval { delete $t->{vehicle}->{label} };
+    my $route_id   = eval { delete $t->{trip}->{route_id} };
+    my $start_time = eval { delete $t->{trip}->{start_time} };
+    my $start_date = eval { delete $t->{trip}->{start_date} };
+    delete $t->{trip}     if !scalar(keys(%{$t->{trip}}));
+    delete $t->{vehicle}  if !scalar(keys(%{$t->{vehicle}}));
+    $t->{trip_id}  = $trip_id  if defined $trip_id;
+    $t->{label}    = $label    if defined $label;
+    $t->{route_id} = $route_id if defined $route_id;
+    $t->{start_time} = $start_time if defined $start_time;
+    $t->{start_date} = $start_date if defined $start_date;
+    foreach my $stu (eval { @{$t->{stop_time_update}} }) {
+	$self->flatten_stop_time_update_record($stu);
+    }
+}
+
+sub get_combined_records {
+    my ($self, $vehicle_array, $trip_update_array) = @_;
+    my %vehicle_by_trip_id;
+    my @combined;
+    foreach my $v (@$vehicle_array) {
+	my $trip_id = eval { $v->{trip} && $v->{trip}->{trip_id} } // $v->{trip_id};
+	$vehicle_by_trip_id{$trip_id} = $v if defined $trip_id;
+    }
+    foreach my $t (@$trip_update_array) {
+	my $trip_id = eval { $t->{trip} && $t->{trip}->{trip_id} } // $t->{trip_id};
+	my $v = $vehicle_by_trip_id{$trip_id};
+	my $combined = { %$v, %$t };
+	push(@combined, $combined);
+    }
+    return @combined;
+}
+
+sub mark_combined_record_as_needed {
+    my ($self, $r) = @_;
+    my $timestamp = $r->{timestamp};
+    if (!defined $timestamp || $timestamp < time() - 3600) {
+	$r->{_exclude_} = 1;
+    }
+}
+
+sub populate_trip_and_route_info {
+    my ($self, $t) = @_;
+    my $route_id   = $t->{route_id};
+    my $start_date = $t->{start_date};
+    my $trip_id    = $t->{trip_id};
+    if (defined $start_date && defined $route_id) {
+	my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $start_date);
+	my $trip_record = $self->db->get_gtfs_trip($geo_gtfs_feed_instance_id, $trip_id);
+	$t->{trip_headsign}    = $trip_record->{trip_headsign};
+	$t->{direction_id}     = $trip_record->{direction_id};
+	$t->{block_id}         = $trip_record->{block_id};
+	my $route_record = $self->db->get_gtfs_route($geo_gtfs_feed_instance_id, $route_id);
+	$t->{route_short_name} = $route_record->{route_short_name};
+	$t->{route_long_name}  = $route_record->{route_long_name};
+    }
+}
+
+sub enhance_timestamps_in {
+    my ($self, $r) = @_;
+
+    my $ts = $r->{timestamp};
+    if (defined $ts && $ts =~ m{^\d+$}) {
+	$r->{timestamp_fmt} = strftime("%a, %d %b %Y %H:%M:%S %z", localtime($ts));
+    }
+
+    my $t = $r->{time};
+    if (defined $t && $t =~ m{^\d+$}) {
+	$r->{time_fmt} = strftime("%a, %d %b %Y %H:%M:%S %z", localtime($t));
+	$r->{time_hh_mm_ss} = strftime("%H:%M:%S", localtime($t));
+    }
+}
+
+#------------------------------------------------------------------------------
+
+sub get_trip_details_feed {
+    my ($self, $trip_id) = @_;
+    my $o = $self->fetch_realtime_all_data_feed();
+    my @t = grep { eval { $_->{trip}->{trip_id} eq $trip_id } } map { $_->{trip_update} || () } @{$o->{entity}};
+    my @v = grep { eval { $_->{trip}->{trip_id} eq $trip_id } } map { $_->{vehicle}     || () } @{$o->{entity}};
+    foreach my $t (@t) {
+	$self->flatten_trip_update_record($t);
+    }
+    foreach my $v (@v) {
+	$self->flatten_vehicle_record($v);
+    }
+    my @combined = $self->get_combined_records(\@t, \@v);
+    foreach my $combined (@combined) {
+	$self->enhance_timestamps_in($combined);
+	$self->populate_trip_and_route_info($combined);
+	$self->mark_combined_record_as_needed($combined);
+	my $stu_array = $combined->{stop_time_update};
+	next unless $stu_array;
+	foreach my $stu (@{$stu_array}) {
+	    $self->flatten_stop_time_update_record($stu);
+	    $self->enhance_stop_time_update_record($stu);
+	    $self->enhance_timestamps_in($stu);
+	    $self->populate_stop_information($combined, $stu);
+	}
+	$self->mark_expected_next_stop($combined);
+    }
+    return {
+	header => $o->{header},
+	trip_update => \@combined
+       };
+}
+
+sub populate_stop_information {
+    my ($self, $tu, $stu) = @_;
+
+    my $stop_id = $stu->{stop_id};
+    if (!defined $stop_id) {
+	return;
+    }
+    
+    my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $tu->{start_date});
+    if (!defined $geo_gtfs_feed_instance_id) {
+	return;
+    }
+
+    my $stop = $self->db->get_gtfs_stop($geo_gtfs_feed_instance_id, $stop_id);
+    if (!$stop) {
+	return;
+    }
+
+    foreach my $key (qw(stop_code stop_name stop_desc stop_lat stop_lon
+			zone_id stop_url location_type parent_station
+			stop_timezone wheelchair_boarding)) {
+	if (!defined $stu->{$key}) {
+	    $stu->{$key} = $stop->{$key};
+	} elsif ($stu->{$key} eq $stop->{$key}) {
+	    $stu->{$key} = $stop->{$key};
+	}
+    }
+
+    my $trip_id = $tu->{trip_id};
+    if (!defined $trip_id) {
+	return;
+    }
+
+    my $stop_time_record = $self->db->get_gtfs_stop_time($geo_gtfs_feed_instance_id,
+							 $stop_id, $trip_id);
+    if ($stop_time_record) {
+
+	my $scheduled_arrival_time   = $stop_time_record->{arrival_time};
+	my $scheduled_departure_time = $stop_time_record->{departure_time};
+	my $scheduled_time           = $scheduled_arrival_time // $scheduled_departure_time;
+	my $sequence                 = $stop_time_record->{stop_sequence};
+
+	$stu->{scheduled_arrival_time}   = $scheduled_arrival_time   if defined $scheduled_arrival_time;
+	$stu->{scheduled_departure_time} = $scheduled_departure_time if defined $scheduled_departure_time;
+	$stu->{scheduled_time}           = $scheduled_time           if defined $scheduled_time;
+    }
+}
+
+sub flatten_stop_time_update_record {
+    my ($self, $stu) = @_;
+
+    my $dep_time      = eval { delete $stu->{departure}->{time} };
+    my $arr_time      = eval { delete $stu->{arrival}->{time} };
+    my $dep_delay     = eval { delete $stu->{departure}->{delay} };
+    my $arr_delay     = eval { delete $stu->{arrival}->{delay} };
+
+    $stu->{departure_time}  = $dep_time  if defined $dep_time;
+    $stu->{arrival_time}    = $arr_time  if defined $arr_time;
+    $stu->{departure_delay} = $dep_delay if defined $dep_delay;
+    $stu->{arrival_delay}   = $arr_delay if defined $arr_delay;
+
+    delete $stu->{departure} if !eval { scalar(keys(%{$stu->{departure}})) };
+    delete $stu->{arrival}   if !eval { scalar(keys(%{$stu->{arrival}})) };
+}
+
+sub enhance_stop_time_update_record {
+    my ($self, $stu) = @_;
+
+    my $time  = $stu->{arrival_time}  // $stu->{departure_time};
+    my $delay = $stu->{arrival_delay} // $stu->{departure_delay};
+    my $delay_minutes = defined $delay && int($delay / 60 + 0.5);
+
+    $stu->{time}          = $time          if defined $time;
+    $stu->{delay}         = $delay         if defined $delay;
+    $stu->{delay_minutes} = $delay_minutes if defined $delay_minutes;
+}
+
+sub mark_expected_next_stop {
+    my ($self, $r) = @_;
+    my $stu_array = $r->{stop_time_update};
+    if (!$stu_array) {
+	return;
+    }
+
+    my $index = 0;
+    my $time = time();
+    foreach my $stu (@{$stu_array}) {
+	if ($stu->{time} < $time) {
+	    $stu->{expected_to_have_been_passed} = 1;
+	} elsif ($stu->{time} >= $time) {
+	    $r->{expected_next_stop_index} = $index;
+	    $stu->{expected_next_stop} = 1;
+	    return;
+	}
+	$index += 1;
+    }
+}
+
+#------------------------------------------------------------------------------
+
 ###############################################################################
 
 sub fetch_all_realtime_data {
@@ -323,68 +601,6 @@ sub get_cooked_realtime_vehicle_position_feed {
     return $o;
 }
 
-sub get_trip_details_feed {
-    my ($self, $trip_id) = @_;
-    my $o = $self->fetch_realtime_all_data_feed();
-    my @t = grep { eval { $_->{trip}->{trip_id} eq $trip_id } } map { $_->{trip_update} || () } @{$o->{entity}};
-    my @v = grep { eval { $_->{trip}->{trip_id} eq $trip_id } } map { $_->{vehicle}     || () } @{$o->{entity}};
-    foreach my $t (@t) {
-	$self->flatten_trip_update_record($t);
-    }
-    foreach my $v (@v) {
-	$self->flatten_vehicle_record($v);
-    }
-    delete $o->{entity};
-    foreach my $t (@t) {
-	$self->populate_trip_update_record($t);
-    }
-    if (scalar(@t) > 1) {
-	$o->{trip_update} = \@t;
-    } elsif (scalar(@t) == 1) {
-	$o->{trip_update} = $t[0];
-    }
-    if (scalar(@v) > 1) {
-	$o->{vehicle} = \@v;
-    } elsif (scalar(@v) == 1) {
-	$o->{vehicle} = $v[0];
-    }
-    return $o;
-}
-
-sub flatten_vehicle_record {
-    my ($self, $v) = @_;
-    my $trip_id = eval { delete $v->{trip}->{trip_id} };
-    my $lat     = eval { delete $v->{position}->{latitude} };
-    my $lon     = eval { delete $v->{position}->{longitude} };
-    my $label   = eval { delete $v->{vehicle}->{label} };
-    delete $v->{trip}     if !scalar(keys(%{$v->{trip}}));
-    delete $v->{position} if !scalar(keys(%{$v->{position}}));
-    delete $v->{vehicle}  if !scalar(keys(%{$v->{vehicle}}));
-    $v->{trip_id} = $trip_id if defined $trip_id;
-    $v->{lat}     = $lat     if defined $lat;
-    $v->{lon}     = $lon     if defined $lon;
-    $v->{label}   = $label   if defined $label;
-}
-
-sub flatten_trip_update_record {
-    my ($self, $t) = @_;
-    my $trip_id    = eval { delete $t->{trip}->{trip_id} };
-    my $label      = eval { delete $t->{vehicle}->{label} };
-    my $route_id   = eval { delete $t->{trip}->{route_id} };
-    my $start_time = eval { delete $t->{trip}->{start_time} };
-    my $start_date = eval { delete $t->{trip}->{start_date} };
-    delete $t->{trip}     if !scalar(keys(%{$t->{trip}}));
-    delete $t->{vehicle}  if !scalar(keys(%{$t->{vehicle}}));
-    $t->{trip_id}  = $trip_id  if defined $trip_id;
-    $t->{label}    = $label    if defined $label;
-    $t->{route_id} = $route_id if defined $route_id;
-    $t->{start_time} = $start_time if defined $start_time;
-    $t->{start_date} = $start_date if defined $start_date;
-    foreach my $stu (eval { @{$t->{stop_time_update}} }) {
-	$self->flatten_stop_time_update_record($stu);
-    }
-}
-
 sub populate_trip_update_record {
     my ($self, $t) = @_;
     my $route_id   = $t->{route_id};
@@ -402,76 +618,9 @@ sub populate_trip_update_record {
     }
 }
 
-sub flatten_stop_time_update_record {
-    my ($self, $stu) = @_;
-    my $dep_time      = eval { delete $stu->{departure}->{time} };
-    my $arr_time      = eval { delete $stu->{arrival}->{time} };
-    my $dep_delay     = eval { delete $stu->{departure}->{delay} };
-    my $arr_delay     = eval { delete $stu->{arrival}->{delay} };
-    my $realtime_time = $arr_time // $dep_time;
-    my $delay         = $arr_delay // $dep_delay;
-    foreach my $k (qw(departure arrival)) {
-	delete $stu->{$k} if exists $stu->{$k} && !scalar(keys(%{$stu->{$k}}));
-    }
-    $stu->{realtime_time} = $realtime_time if defined $realtime_time;
-    if (defined $delay) {
-	$stu->{delay}         = $delay;
-	$stu->{delay_minutes} = int($delay / 60 + 0.5);
-    }
-}
-
 sub populate_stop_time_update_record {
     my ($self, $tu, $stu) = @_;
     $self->process_090_populate_stop_time_update($tu, $stu);
-}
-
-sub get_vehicle_feed {
-    my ($self) = @_;
-    my $o = $self->fetch_realtime_all_data_feed();
-    my @t;
-    my @v;
-    foreach my $e (@{delete $o->{entity}}) {
-	my $v = delete $e->{vehicle};
-	my $t = delete $e->{trip_update};
-	push(@v, $v) if $v;
-	push(@t, $t) if $t;
-    }
-    foreach my $v (@v) {
-	$self->flatten_vehicle_record($v);
-    }
-    foreach my $t (@t) {
-	$self->flatten_trip_update_record($t);
-    }
-    my %vv = map { (defined $_->{label}   ? ($_->{label}   => $_) : ()) } @v;
-    my %vt = map { (defined $_->{trip_id} ? ($_->{trip_id} => $_) : ()) } @v;
-    my %tv = map { (defined $_->{label}   ? ($_->{label}   => $_) : ()) } @t;
-    my %tt = map { (defined $_->{trip_id} ? ($_->{trip_id} => $_) : ()) } @t;
-    my $now = time();
-    foreach my $v (@v) {
-	my $t = eval { $tt{$v->{trip_id}} } // eval { $tv{$v->{label}} };
-	next unless $t;
-	my $route_id = $t->{route_id};
-	$v->{route_id} = $route_id if defined $route_id;
-	my $start_date = $t->{start_date};
-	if (defined $start_date) {
-	    my ($geo_gtfs_feed_instance_id, $service_id) = $self->db->get_geo_gtfs_feed_instance_id_and_service_id($self->{geo_gtfs_agency_id}, $start_date);
-	    my $trip_record = $self->db->get_gtfs_trip($geo_gtfs_feed_instance_id, $t->{trip_id});
-	    $v->{trip_headsign} = $trip_record->{trip_headsign};
-	    if (defined $route_id) {
-		my $route_record =
-		  $self->db->get_gtfs_route($geo_gtfs_feed_instance_id, $route_id);
-		$v->{route_short_name} = $route_record->{route_short_name};
-		$v->{route_long_name} = $route_record->{route_long_name};
-	    }
-	}
-	$v->{timestamp_fmt} = strftime("%a, %d %b %Y %H:%M:%S %z", localtime($v->{timestamp}));
-	if ($v->{timestamp} < $now - 3600) {
-	    $v->{_exclude_} = 1;
-	}
-    }
-    $o->{vehicle}     = [ grep { !$_->{_exclude_} } @v ];
-    $o->{trip_update} = [ @t ];
-    return $o;
 }
 
 sub list_latest_realtime_feeds {
@@ -555,8 +704,8 @@ sub process_010_flatten_vehicle_positions {
     my ($self) = @_;
     foreach my $vp (@{$self->{vehicle_positions_array}}) {
 	eval { $vp->{trip_id}   = delete $vp->{trip}->{trip_id}       if defined $vp->{trip}->{trip_id};       };
-	eval { $vp->{lat}       = delete $vp->{position}->{latitude}  if defined $vp->{position}->{latitude};  };
-	eval { $vp->{lon}       = delete $vp->{position}->{longitude} if defined $vp->{position}->{longitude}; };
+	eval { $vp->{latitude}       = delete $vp->{position}->{latitude}  if defined $vp->{position}->{latitude};  };
+	eval { $vp->{longitude}       = delete $vp->{position}->{longitude} if defined $vp->{position}->{longitude}; };
 	eval { $vp->{label}     = delete $vp->{vehicle}->{label}      if defined $vp->{vehicle}->{label};      };
 	foreach my $k (qw(trip position vehicle)) {
 	    delete $vp->{$k} if exists $vp->{$k} && !scalar(keys(%{$vp->{$k}}));
@@ -882,7 +1031,7 @@ sub print_trip_status {
 
     printf("            Trip ID: %s\n", $trip_id);
     printf("Longitude, Latitude: %.6f, %.6f\n",
-	   $tu->{lon}, $tu->{lat});
+	   $tu->{longitude}, $tu->{latitude});
     printf("              Route: %s %s\n", $tu->{route_short_name}, $tu->{route_long_name});
     printf("        Destination: %s\n", $tu->{trip_headsign});
     printf("              As of: %s\n",  strftime("%Y-%m-%d %H:%M:%S %Z", localtime($tu->{as_of})));
