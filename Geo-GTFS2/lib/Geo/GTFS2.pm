@@ -3,9 +3,11 @@ use strict;
 use warnings;
 
 BEGIN {
-    foreach my $dir ("/home/dse/git/HTTP-Cache-Transparent/lib",
-		     "/Users/dse/git/HTTP-Cache-Transparent/lib",
+    foreach my $dir ("/home/dse/git/KNOWN_WORKING/HTTP-Cache-Transparent/lib",
+		     "/home/dse/git/KNOWN_WORKING/geo-gtfs-modules-2/Geo-GTFS2/lib",
+		     "/home/dse/git/HTTP-Cache-Transparent/lib",
 		     "/home/dse/git/geo-gtfs-modules-2/Geo-GTFS2/lib",
+		     "/Users/dse/git/HTTP-Cache-Transparent/lib",
 		     "/Users/dse/git/geo-gtfs-modules-2/Geo-GTFS2/lib",
 		    ) {
 	unshift(@INC, $dir) if -d $dir;
