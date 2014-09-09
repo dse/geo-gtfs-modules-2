@@ -5,6 +5,8 @@ use strict;
 use FindBin;
 use lib "$FindBin::Bin/../lib";
 
+use lib "$ENV{HOME}/git/perl-app-thingy/lib";
+
 use Geo::GTFS2::CommandLine;
 
 my $cl = Geo::GTFS2::CommandLine->new();
