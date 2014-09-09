@@ -2,16 +2,6 @@ package Geo::GTFS2::CommandLine;
 use warnings;
 use strict;
 
-BEGIN {
-    foreach my $dir ("/home/dse/git/KNOWN_WORKING/perl-app-thingy/lib",
-		     "/home/dse/git/perl-app-thingy/lib",
-		     "/Users/dse/git/perl-app-thingy/lib") {
-	if (-d $dir) {
-	    push(@INC, $dir);
-	}
-    }
-}
-
 use base "App::Thingy";
 use Geo::GTFS2;
 
