@@ -112,7 +112,7 @@ sub drop_tables {
     my ($self) = @_;
     my $dbh = $self->{dbh};
     print STDERR ("Dropping database tables...\n");
-    $self->dbh->do(<<"END");
+    $self->execute_multiple_sql_queries(<<"END");
 drop table if exists geo_gtfs;
 drop table if exists geo_gtfs_agency;
 drop table if exists geo_gtfs_feed;
