@@ -2,16 +2,6 @@ package Geo::GTFS2;
 use strict;
 use warnings;
 
-BEGIN {
-    foreach my $dir ("/home/dse/git/KNOWN_WORKING/HTTP-Cache-Transparent/lib",
-		     "/home/dse/git/HTTP-Cache-Transparent/lib",
-		     "/Users/dse/git/HTTP-Cache-Transparent/lib",
-		    ) {
-	unshift(@INC, $dir) if -d $dir;
-    }
-    # my fork adds a special feature called NoUpdateImpatient.
-}
-
 use DBI;
 use Data::Dumper;
 use File::Basename qw(dirname basename);
