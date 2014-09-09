@@ -1,0 +1,5 @@
+- rename geo_gtfs_agency to geo_gtfs_provider
+- rename this repos from geo-gtfs-modules-2 to geo-transit
+- rename modules from Geo::GTFS2 to Geo::Transit
+- move GTFS code to Geo::Transit::GTFS
+- move GTFS-Realtime code to Geo::Transit::GTFSRealtime
