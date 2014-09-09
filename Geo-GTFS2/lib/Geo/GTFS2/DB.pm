@@ -137,7 +137,7 @@ END
 
 sub create_tables {
     my ($self) = @_;
-    my $dbh = $self->{dbh};
+    my $dbh = $self->dbh;
 
     my $sql = <<"END";
 create table if not exists geo_gtfs (
