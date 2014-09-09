@@ -395,6 +395,11 @@ create index if not exists geo_gtfs_frequencies_00              on gtfs_frequenc
 create index if not exists geo_gtfs_transfers_00                on gtfs_transfers       (geo_gtfs_feed_instance_id);
 create index if not exists geo_gtfs_feed_info_00                on gtfs_feed_info       (geo_gtfs_feed_instance_id);
 END
+    $self->execute_multiple_sql_queries($sql);
+}
+
+sub execute_multiple_sql_queries {
+    my ($self, $sql) = @_;
     $sql =~ s{--.*?$}{}gsm;
     my @sql = split(qr{;$}m, $sql);
     foreach my $sql (@sql) {
@@ -402,7 +407,7 @@ END
 	my $short = $sql;
 	$short =~ s{\s+}{ }gsm;
 	$short =~ s{\(.*}{};
-	eval { $dbh->do($sql); };
+	eval { $self->dbh->do($sql); };
 	if ($@) {
 	    my $error = $@;
 	    die($error);
