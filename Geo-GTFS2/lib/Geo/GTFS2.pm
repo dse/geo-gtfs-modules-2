@@ -751,8 +751,6 @@ sub is_url {
 ###############################################################################
 
 BEGIN {
-    # in osx you may have to run: cpan Crypt::SSLeay and do other
-    # things
     my ($uname) = uname();
     if ($uname =~ m{^Darwin}) {
 	my $ca_file = "/usr/local/opt/curl-ca-bundle/share/ca-bundle.crt";
