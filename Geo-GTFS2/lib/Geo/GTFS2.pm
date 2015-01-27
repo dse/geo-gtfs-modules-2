@@ -662,7 +662,9 @@ sub process_gtfs_feed {
 	my $fh = Archive::Zip::MemberRead->new($zip, $filename);
 
 	my $csv = Text::CSV->new ({ binary => 1 });
-	my $fields = $csv->getline($fh);
+	my $line = $fh->getline();
+	$csv->parse($line);
+	my $fields = [$csv->fields()];
 	die("no fields in member $filename of $zip_filename\n")
 	  unless $fields or scalar(@$fields);
 
@@ -677,7 +679,9 @@ sub process_gtfs_feed {
 	print STDERR ("Populating $table_name ... ");
 
 	my $rows = 0;
-	while (defined(my $data = $csv->getline($fh))) {
+	while (defined(my $line = $fh->getline())) {
+	    $csv->parse($line);
+	    my $data = [$csv->fields()];
 	    $sth->execute($geo_gtfs_feed_instance_id, @$data);
 	    $rows += 1;
 	}
@@ -719,6 +723,26 @@ END
     print("----  ----------  --------------------------------\n");
     while (my $row = $sth->fetchrow_hashref()) {
 	printf("%4d  %10d  %s\n", $row->{id}, $row->{feed_count}, $row->{name});
+    }
+}
+
+sub list_feeds {
+    my ($self) = @_;
+    my $sth = $self->dbh->prepare(<<"END");
+	select
+                f.url as url,
+                i.last_modified as last_modified,
+                a.name as agency_name
+        from geo_gtfs_feed f
+            left join geo_gtfs_feed_instance i on f.id = i.geo_gtfs_feed_id
+            left join geo_gtfs_agency a on f.geo_gtfs_agency_id = a.id
+        order by agency_name asc, last_modified desc
+END
+    $sth->execute();
+    print("agency_name       last_modified  url\n");
+    print("----------------  -------------  ----------------------------------------------\n");
+    while (my $row = $sth->fetchrow_hashref()) {
+	printf("%-16s  %-13s  %s\n", @{$row}{qw(agency_name last_modified url)});
     }
 }
 
