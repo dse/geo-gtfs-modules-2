@@ -696,4 +696,54 @@ sub DESTROY {
     # STFU: Issuing rollback() due to DESTROY without explicit disconnect() of DBD::SQLite::db handle /Users/dse/.geo-gtfs2/google_transit.sqlite.
 }
 
+=head1 NAME
+
+Geo::GTFS2::DB - Database query handling for Geo::GTFS2
+
+=head1 DESCRIPTION
+
+Database handling routines.  Internally used for Geo::GTFS2, primarily.
+
+=head1 METHODS
+
+=head2 Constructor
+
+    my $db = Geo::GTFS2::DB->new();
+
+=head2 dbh
+
+    my $dbh = $db->dbh();
+
+Returns a DBI database connection handle.  Creates one first, if one
+has not yet been created.
+
+=head2 select_or_insert_id
+
+    my $id = $db->select_or_insert_id(
+        table_name => "table",
+        id_name    => "id",
+        key_fields => {
+                      },
+        before_insert => {
+                             sql         => ...,
+                             bind_values => [...],
+                         },
+        more_fields => {
+                       },
+    );
+
+=head2 execute_multiple_sql_queries
+
+    $db->execute_multiple_sql_queries(<<"END");
+        create table A (...);
+        create table B (...);
+        create table C (...);
+    END
+
+Each statement must be terminated by a semicolon followed by a newline.
+
+
+
+=cut
+
 1;
