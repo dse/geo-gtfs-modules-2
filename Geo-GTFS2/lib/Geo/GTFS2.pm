@@ -663,6 +663,7 @@ sub process_gtfs_feed {
 
 	my $csv = Text::CSV->new ({ binary => 1 });
 	my $line = $fh->getline();
+	$line =~ s{[\r\n]+$}{};
 	$csv->parse($line);
 	my $fields = [$csv->fields()];
 	die("no fields in member $filename of $zip_filename\n")
@@ -680,8 +681,12 @@ sub process_gtfs_feed {
 
 	my $rows = 0;
 	while (defined(my $line = $fh->getline())) {
+	    $line =~ s{[\r\n]+$}{};
 	    $csv->parse($line);
 	    my $data = [$csv->fields()];
+	    if (scalar(@$data) < scalar(@$fields)) {
+		next;
+	    }
 	    $sth->execute($geo_gtfs_feed_instance_id, @$data);
 	    $rows += 1;
 	}
