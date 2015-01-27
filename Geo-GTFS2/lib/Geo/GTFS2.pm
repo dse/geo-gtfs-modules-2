@@ -706,12 +706,19 @@ sub get_agencies {
 
 sub list_agencies {
     my ($self) = @_;
-    my $sth = $self->dbh->prepare("select * from geo_gtfs_agency");
+    my $sth = $self->dbh->prepare(<<"END");
+        select geo_gtfs_agency.id as id,
+               geo_gtfs_agency.name as name,
+               count(*) as feed_count
+        from geo_gtfs_agency
+             left join geo_gtfs_feed on geo_gtfs_agency.id = geo_gtfs_feed.geo_gtfs_agency_id
+        group by geo_gtfs_agency.id
+END
     $sth->execute();
-    print("id    name\n");
-    print("----  --------------------------------\n");
+    print("id    feed_count  name\n");
+    print("----  ----------  --------------------------------\n");
     while (my $row = $sth->fetchrow_hashref()) {
-	printf("%4d  %s\n", $row->{id}, $row->{name});
+	printf("%4d  %10d  %s\n", $row->{id}, $row->{feed_count}, $row->{name});
     }
 }
 
