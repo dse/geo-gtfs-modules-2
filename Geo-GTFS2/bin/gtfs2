@@ -2,10 +2,17 @@
 use warnings;
 use strict;
 
-use FindBin;
-use lib "$FindBin::Bin/../lib";
+use Carp qw();
+BEGIN {
+    if ($ENV{DEBUG}) {
+	$SIG{__DIE__} = \&Carp::confess;
+    }
+}
 
+use FindBin;
+use lib "$ENV{HOME}/git/geo-gtfs-modules-2/Geo-GTFS2/lib";
 use lib "$ENV{HOME}/git/perl-app-thingy/lib";
+use lib "$FindBin::Bin/../lib";
 
 use Geo::GTFS2::CommandLine;
 
