@@ -95,10 +95,10 @@ sub help__trip_status { {
 #     required => "AGENCY_NAME"
 # } }
 
-# sub cmd__list_agencies {
-#     my ($self) = @_;
-#     $self->gtfs2->list_agencies();
-# }
+sub cmd__list_agencies {
+    my ($self) = @_;
+    $self->gtfs2->list_agencies();
+}
 # sub help__list_agencies { {
 # } }
 
