@@ -580,7 +580,7 @@ sub select_or_insert_geo_gtfs_feed_instance_id {
     return $self->select_or_insert_id("table_name" => "geo_gtfs_feed_instance",
 				      "id_name" => "id",
 				      "key_fields" => { "geo_gtfs_feed_id" => $geo_gtfs_feed_id,
-							"last_modified"             => $last_modified },
+							"last_modified"    => $last_modified },
 				      "more_fields" => { "filename"  => $rel_filename,
 							 "retrieved" => $retrieved },
 				      "before_insert" => { sql => "update geo_gtfs_feed_instance set is_latest = 0 " .
@@ -658,6 +658,181 @@ END
     }
     return ($row->{geo_gtfs_feed_instance_id},
 	    $row->{service_id});
+}
+
+#------------------------------------------------------------------------------
+
+use POSIX qw(strftime);
+use Time::ParseDate;
+
+sub get_list_of_current_trips {
+    my ($self, $geo_gtfs_feed_instance_id, $time_t) = @_;
+    $time_t //= time();
+
+    my @localtime = localtime($time_t);
+    my ($hh, $mm, $ss) = @localtime[2, 1, 0];
+    my $hhmmss    = sprintf("%02d:%02d:%02d", $hh, $mm, $ss);
+    my $hhmmss_xm = sprintf("%02d:%02d:%02d", $hh + 24, $mm, $ss);
+
+    my $service_id    = $self->get_current_day_service_id($geo_gtfs_feed_instance_id, $time_t);
+    my $service_id_xm = $self->get_previous_day_service_id($geo_gtfs_feed_instance_id, $time_t);
+
+    my $sql = "
+	select   t.trip_id as trip_id,
+                 min(st.departure_time) as trip_departure_time,
+                 max(st.arrival_time) as trip_arrival_time,
+		 t.trip_headsign as trip_headsign,
+		 t.trip_short_name as trip_short_name,
+		 t.direction_id as direction_id,
+		 t.block_id as block_id,
+		 r.route_id as route_id,
+		 r.route_short_name as route_short_name,
+		 r.route_long_name as route_long_name
+        from     gtfs_stop_times st
+                 join gtfs_trips t
+                         on st.trip_id = t.trip_id
+                            and st.geo_gtfs_feed_instance_id = t.geo_gtfs_feed_instance_id
+		 join gtfs_routes r
+                         on t.route_id = r.route_id
+                            and t.geo_gtfs_feed_instance_id = r.geo_gtfs_feed_instance_id
+        where    t.service_id = ?
+	         and t.geo_gtfs_feed_instance_id = ?
+        group by t.trip_id
+	having   trip_departure_time <= ? and ? < trip_arrival_time
+	order by r.route_id, trip_departure_time
+    ";
+
+    my $sth = $self->dbh->prepare($sql);
+    my @rows;
+    $sth->execute($service_id_xm, $hhmmss_xm, $hhmmss_xm);
+    while (my $row = $sth->fetchrow_hashref()) {
+	push(@rows, $row);
+    }
+    $sth->execute($service_id, $hhmmss, $hhmmss);
+    while (my $row = $sth->fetchrow_hashref()) {
+	push(@rows, $row);
+    }
+    return @rows;
+}
+
+sub get_list_of_current_trips_2 {
+    my ($self, $geo_gtfs_feed_instance_id, $time_t) = @_;
+    $time_t //= time();
+
+    my @localtime = localtime($time_t);
+    my ($hh, $mm, $ss) = @localtime[2, 1, 0];
+    my $hhmmss    = sprintf("%02d:%02d:%02d", $hh, $mm, $ss);
+    my $hhmmss_xm = sprintf("%02d:%02d:%02d", $hh + 24, $mm, $ss);
+
+    my $service_id    = $self->get_current_day_service_id($geo_gtfs_feed_instance_id, $time_t);
+    my $service_id_xm = $self->get_previous_day_service_id($geo_gtfs_feed_instance_id, $time_t);
+
+    my $sql1 = "
+        select   t.trip_id as trip_id,
+		 t.trip_headsign as trip_headsign,
+		 t.trip_short_name as trip_short_name,
+		 t.direction_id as direction_id,
+		 t.block_id as block_id,
+		 r.route_id as route_id,
+		 r.route_short_name as route_short_name,
+		 r.route_long_name as route_long_name
+        from     gtfs_trips t
+                 join gtfs_routes r
+                   on t.route_id = r.route_id
+                      and t.geo_gtfs_feed_instance_id = r.geo_gtfs_feed_instance_id
+        where    t.service_id = ?
+                 and t.geo_gtfs_feed_instance_id = ?
+        order by r.route_id, t.trip_id
+        ;
+    ";
+    my $sth1 = $self->dbh->prepare($sql1);
+    $sth1->execute($service_id_xml, $geo_gtfs_feed_instance_id);
+    my @trips_xm;
+    while (my $row = $sth1->fetchrow_hashref()) {
+	push(@trips_xm, $row);
+    }
+    $sth1->execute($service_id, $geo_gtfs_feed_instance_id);
+    my @trips;
+    while (my $row = $sth1->fetchrow_hashref()) {
+	push(@trips, $row);
+    }
+
+    my $sql2 = "
+        select   min(departure_time) as trip_departure_time, max(arrival_time) as trip_arrival_time
+        from     gtfs_stop_times st
+        where    st.trip_id = ?
+                   and t.geo_gtfs_feed_instance_id = ?
+        group by st.trip_id
+        ;
+    ";
+    my $sth2 = $self->dbh->prepare($sql2);
+    foreach my $t (@trips, @trips_xm) {
+	$sth2->execute($t->{trip_id}, $geo_gtfs_feed_instance_id);
+	my $row = $sth2->fetchrow_hashref();
+	if ($row) {
+	    $t->{trip_departure_time} = $row->{trip_departure_time};
+	    $t->{trip_arrival_time}   = $row->{trip_arrival_time};
+	}
+    }
+
+    return (@trips_xm, @trips);
+}
+
+sub get_current_day_service_id {
+    my ($self, $geo_gtfs_feed_instance_id, $time_t) = @_;
+    $time_t //= time();
+
+    return $self->get_service_id_by_date($time_t);
+}
+
+sub get_previous_day_service_id {
+    my ($self, $geo_gtfs_feed_instance_id, $time_t) = @_;
+    $time_t //= time();
+
+    my $yesterday = parsedate("yesterday", NOW => $time_t);
+    return $self->get_service_id_by_date($yesterday);
+}
+
+our @GTFS_CALENDAR_COLUMN_NAMES;
+BEGIN {
+    @GTFS_CALENDAR_COLUMN_NAMES = qw(sunday monday tuesday wednesday
+				     thursday friday saturday);
+}
+
+sub get_service_id_by_date {
+    my ($self, $geo_gtfs_feed_instance_id, $time_t) = @_;
+    $time_t //= time();
+
+    my @localtime = localtime($time_t);
+    my $yyyymmdd = strftime("%Y%m%d", @localtime);
+    my $wday = $localtime[6];
+    my $wday_column_name = $GTFS_CALENDAR_COLUMN_NAMES[$wday];
+
+    my $sql2 = "
+        select  service_id
+        from    gtfs_calendar_dates
+        where   geo_gtfs_feed_instance_id = ?
+                and exception_type = 2
+                and `date` = ?
+    ";
+    my $sth2 = $self->dbh->prepare($sql2);
+    $sth2->execute($geo_gtfs_feed_instance_id, $yyyymmdd);
+    if (my $row = $sth2->fetchrow_array()) {
+	return $row->{service_id};
+    }
+
+    my $sql1 = "
+        select  service_id
+        from    gtfs_calendar
+        where   geo_gtfs_feed_instance_id = ?
+                and $wday_column_name
+                and ? between start_date and end_date
+    ";
+    my $sth1 = $self->dbh->prepare($sql1);
+    $sth1->execute($geo_gtfs_feed_instance_id, $yyyymmdd);
+    if (my $row = $sth1->fetchrow_array()) {
+	return $row->{service_id};
+    }
 }
 
 ###############################################################################
