@@ -746,7 +746,7 @@ sub get_list_of_current_trips_2 {
         ;
     ";
     my $sth1 = $self->dbh->prepare($sql1);
-    $sth1->execute($service_id_xml, $geo_gtfs_feed_instance_id);
+    $sth1->execute($service_id_xm, $geo_gtfs_feed_instance_id);
     my @trips_xm;
     while (my $row = $sth1->fetchrow_hashref()) {
 	push(@trips_xm, $row);
