@@ -61,24 +61,35 @@ sub new {
 
 sub init {
     my ($self, %args) = @_;
-    my @pwent = getpwuid($>);
-    while (my ($k, $v) = each(%args)) {
-	$self->{$k} = $v;
-    }
-    my $dir;
-    my $username = $pwent[0];
-    if ($username eq "_www") { # special os x user
-	$dir = $self->{dir} //= "/Users/_www/.geo-gtfs2";
-    } else {
-	my $HOME = $ENV{HOME} // $pwent[7];
-	$dir = $self->{dir} //= "$HOME/.geo-gtfs2";
-    }
+    $self->init_args(%args);
+    $self->init_dir();
+
+    my $dir = $self->{dir};
     $self->{http_cache_dir} //= "$dir/http-cache";
     my $dbfile = $self->{sqlite_filename} //= "$dir/google_transit.sqlite";
     $self->{magic} = File::MMagic->new();
     $self->{magic}->addMagicEntry("0\tstring\t\\x0a\\x0b\\x0a\\x03\tapplication/x-protobuf");
     $self->{gtfs_realtime_proto} = "https://developers.google.com/transit/gtfs-realtime/gtfs-realtime.proto";
     $self->{gtfs_realtime_protocol_pulled} = 0;
+}
+
+sub init_args {
+    my ($self, %args) = @_;
+    while (my ($k, $v) = each(%args)) {
+	$self->{$k} = $v;
+    }
+}
+
+sub init_dir {
+    my ($self) = @_;
+    my @pwent = getpwuid($>);
+    my $username = $pwent[0];
+    if ($username eq "_www") {  # special os x user
+        $self->{dir} //= "/Users/_www/.geo-gtfs2";
+    } else {
+	my $HOME = $ENV{HOME} // $pwent[7];
+	$self->{dir} //= "$HOME/.geo-gtfs2";
+    }
 }
 
 ###############################################################################
@@ -90,7 +101,7 @@ sub set_agency {
 
     $self->{geo_gtfs_agency_name} = $agency_name;
     $self->{geo_gtfs_agency_id} =
-      $self->db->select_or_insert_geo_gtfs_agency_id($agency_name);
+        $self->db->select_or_insert_geo_gtfs_agency_id($agency_name);
 }
 
 sub set_agency_id {
@@ -259,14 +270,14 @@ sub process_protocol_buffers {
     }
 
     $self->{geo_gtfs_realtime_feed_id} =
-      $self->db->select_or_insert_geo_gtfs_realtime_feed_id($self->{geo_gtfs_agency_id}, $url, $feed_type);
+        $self->db->select_or_insert_geo_gtfs_realtime_feed_id($self->{geo_gtfs_agency_id}, $url, $feed_type);
 
     $self->{geo_gtfs_realtime_feed_instance_id} =
-      $self->db->select_or_insert_geo_gtfs_realtime_feed_instance_id($self->{geo_gtfs_realtime_feed_id},
-								     $rel_pb_filename,
-								     $retrieved,
-								     $last_modified,
-								     $header_timestamp);
+        $self->db->select_or_insert_geo_gtfs_realtime_feed_instance_id($self->{geo_gtfs_realtime_feed_id},
+                                                                       $rel_pb_filename,
+                                                                       $retrieved,
+                                                                       $last_modified,
+                                                                       $header_timestamp);
 
     return $o;
 }
@@ -323,7 +334,7 @@ sub get_vehicle_feed {
     return {
 	header  => $o->{header},
 	vehicle => \@combined
-       };
+    };
 }
 
 sub flatten_vehicle_record {
@@ -448,7 +459,7 @@ sub get_trip_details_feed {
     return {
 	header => $o->{header},
 	trip_update => \@combined
-       };
+    };
 }
 
 sub populate_stop_information {
@@ -679,7 +690,7 @@ sub process_gtfs_feed {
 	$csv->parse($line);
 	my $fields = [$csv->fields()];
 	die("no fields in member $filename of $zip_filename\n")
-	  unless $fields or scalar(@$fields);
+            unless $fields or scalar(@$fields);
 
 	$self->dbh->do("delete from $table_name where geo_gtfs_feed_instance_id = ?",
 		       {}, $geo_gtfs_feed_instance_id);
@@ -769,7 +780,7 @@ sub is_agency_name {
 		     [A-Za-z0-9]+(-[A-Za-z0-9]+)*
 		     (\.[A-Za-z0-9]+(-[A-Za-z0-9]+)*)+
 		     $}xi
-		       && !$self->is_ipv4_address($arg);
+                         && !$self->is_ipv4_address($arg);
 }
 
 ###############################################################################
@@ -780,7 +791,7 @@ sub exec_sqlite_utility {
     my ($self) = @_;
     my $dbfile = $self->{sqlite_filename};
     exec("sqlite3", $dbfile) or die("cannot exec sqlite: $!\n");
-}
+};
 
 sub is_ipv4_address {
     my ($self, $arg) = @_;
@@ -849,4 +860,4 @@ sub db {
     return $self->{db} = Geo::GTFS2::DB->new();
 }
 
-1; # End of Geo::GTFS2
+1;                              # End of Geo::GTFS2
