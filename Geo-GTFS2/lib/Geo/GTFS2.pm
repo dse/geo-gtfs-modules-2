@@ -16,7 +16,7 @@ use HTTP::Date qw(str2time);
 use JSON qw(-convert_blessed_universally);
 use LWP::UserAgent;
 use List::MoreUtils qw(all);
-use POSIX qw(strftime uname);
+use POSIX qw(strftime);
 use Text::CSV;
 
 # [1] File::MMagic best detects .zip files, and allows us to add magic
