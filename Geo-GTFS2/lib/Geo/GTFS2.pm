@@ -2,6 +2,8 @@ package Geo::GTFS2;
 use strict;
 use warnings;
 
+use base "Geo::GTFS2::Object";
+
 use DBI;
 use Data::Dumper;
 use File::Basename qw(dirname basename);
@@ -20,51 +22,40 @@ use Text::CSV;
 # [1] File::MMagic best detects .zip files, and allows us to add magic
 # for Google Protocol Buffers files.
 
-use constant IGNORE_FIELDS => 1;
-
 BEGIN {
-    if (!IGNORE_FIELDS) {
-	require fields;
-	import fields qw(dir http_cache_dir
-			 sqlite_filename
-			 dbh db
-			 ua
-			 magic
-			 json
+    our @FIELDS = qw(dir
+                     http_cache_dir
+                     sqlite_filename
+                     dbh
+                     db
+                     ua
+                     magic
+                     json
 
-			 gtfs_realtime_proto
-			 gtfs_realtime_protocol_pulled
+                     gtfs_realtime_proto
+                     gtfs_realtime_protocol_pulled
 
-			 vehicle_positions
-			 vehicle_positions_by_trip_id
-			 vehicle_positions_array
-			 trip_updates
-			 trip_updates_array
-			 realtime_feed
-			 header
-			 headers
+                     vehicle_positions
+                     vehicle_positions_by_trip_id
+                     vehicle_positions_array
+                     trip_updates
+                     trip_updates_array
+                     realtime_feed
+                     header
+                     headers
 
-                         write_json
+                     write_json
 
-			 geo_gtfs_agency_name
-			 geo_gtfs_agency_id
-			 geo_gtfs_feed_id
-			 geo_gtfs_realtime_feed_id
-			 geo_gtfs_realtime_feed_instance_id);
-    }
-}
-
-sub new {
-    my ($class, %args) = @_;
-    my $self = IGNORE_FIELDS ? bless({}, $class) : fields::new($class);
-    $self->init(%args);
-    return $self;
+                     geo_gtfs_agency_name
+                     geo_gtfs_agency_id
+                     geo_gtfs_feed_id
+                     geo_gtfs_realtime_feed_id
+                     geo_gtfs_realtime_feed_instance_id);
 }
 
 sub init {
     my ($self, %args) = @_;
-    $self->init_args(%args);
-    $self->init_dir();
+    $self->SUPER::init(%args);
 
     my $dir = $self->{dir};
     $self->{http_cache_dir} //= "$dir/http-cache";
@@ -73,25 +64,6 @@ sub init {
     $self->{magic}->addMagicEntry("0\tstring\t\\x0a\\x0b\\x0a\\x03\tapplication/x-protobuf");
     $self->{gtfs_realtime_proto} = "https://developers.google.com/transit/gtfs-realtime/gtfs-realtime.proto";
     $self->{gtfs_realtime_protocol_pulled} = 0;
-}
-
-sub init_args {
-    my ($self, %args) = @_;
-    while (my ($k, $v) = each(%args)) {
-	$self->{$k} = $v;
-    }
-}
-
-sub init_dir {
-    my ($self) = @_;
-    my @pwent = getpwuid($>);
-    my $username = $pwent[0];
-    if ($username eq "_www") {  # special os x user
-        $self->{dir} //= "/Users/_www/.geo-gtfs2";
-    } else {
-	my $HOME = $ENV{HOME} // $pwent[7];
-	$self->{dir} //= "$HOME/.geo-gtfs2";
-    }
 }
 
 ###############################################################################
@@ -814,38 +786,10 @@ sub is_url {
     return $arg =~ m{^https?://}i;
 }
 
-###############################################################################
-# WEBBERNETS
-###############################################################################
-
-BEGIN {
-    my ($uname) = uname();
-    if ($uname =~ m{^Darwin}) {
-	my $ca_file = "/usr/local/opt/curl-ca-bundle/share/ca-bundle.crt";
-	if (-e $ca_file) {
-	    $ENV{HTTPS_CA_FILE} = $ca_file;
-	} else {
-	    warn(<<"END");
-
-Looks like you are using a Mac.  You should run:
-    brew install curl-ca-bundle.
-You may also need to run:
-    sudo cpan Crypt::SSLeay
-
-END
-	    exit(1);
-	}
-    }
-}
-
 sub ua {
     my ($self) = @_;
     return $self->{ua} //= LWP::UserAgent->new();
 }
-
-###############################################################################
-# GENERIC UTILITY FUNCTIONS
-###############################################################################
 
 sub json {
     my ($self) = @_;
