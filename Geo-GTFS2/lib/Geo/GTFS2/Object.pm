@@ -2,6 +2,8 @@ package Geo::GTFS2::Object;
 use warnings;
 use strict;
 
+use POSIX qw(uname);
+
 sub new {
     my ($class, %args) = @_;
     my $self = bless({}, $class);
