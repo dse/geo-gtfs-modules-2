@@ -2,27 +2,21 @@ package Geo::GTFS2::Realtime;
 use warnings;
 use strict;
 
+use base "Geo::GTFS2::Object";
+
 use Google::ProtocolBuffers;
 use HTTP::Cache::Transparent;
 use LWP::UserAgent;
-use POSIX qw(strftime uname);
+use POSIX qw(strftime);
 use JSON qw(-convert_blessed_universally);
 use File::MMagic;		# see note [1] below
 
 # [1] File::MMagic best detects .zip files, and allows us to add magic
 # for Google Protocol Buffers files.
 
-sub new {
-    my ($class, %args) = @_;
-    my $self = bless({}, $class);
-    $self->init(%args);
-    return $self;
-}
-
 sub init {
     my ($self, %args) = @_;
-    $self->init_args(%args);
-    $self->init_dir();
+    $self->SUPER::init(%args);
 
     my $dir = $self->{dir};
     $self->{http_cache_dir} //= "$dir/http-cache";
@@ -32,26 +26,6 @@ sub init {
     }
     $self->{gtfs_realtime_proto} //= "https://developers.google.com/transit/gtfs-realtime/gtfs-realtime.proto";
     $self->{gtfs_realtime_protocol_pulled} //= 0;
-}
-
-sub init_args {
-    my ($self, %args) = @_;
-    while (my ($k, $v) = each(%args)) {
-	$self->{$k} = $v;
-    }
-}
-
-sub init_dir {
-    my ($self) = @_;
-    return if defined $self->{dir};
-    my @pwent = getpwuid($>);
-    my $username = $pwent[0];
-    if ($username eq "_www") {  # special os x user
-        $self->{dir} = "/Users/_www/.geo-gtfs2";
-    } else {
-	my $HOME = $ENV{HOME} // $pwent[7];
-	$self->{dir} = "$HOME/.geo-gtfs2";
-    }
 }
 
 sub process_url {
@@ -208,26 +182,6 @@ sub write_json {
     }
 }
 
-BEGIN {
-    my ($uname) = uname();
-    if ($uname =~ m{^Darwin}) {
-	my $ca_file = "/usr/local/opt/curl-ca-bundle/share/ca-bundle.crt";
-	if (-e $ca_file) {
-	    $ENV{HTTPS_CA_FILE} = $ca_file;
-	} else {
-	    warn(<<"END");
-
-Looks like you are using a Mac.  You should run:
-    brew install curl-ca-bundle.
-You may also need to run:
-    sudo cpan Crypt::SSLeay
-
-END
-	    exit(1);
-	}
-    }
-}
-
 sub ua {
     my ($self) = @_;
     return $self->{ua} //= LWP::UserAgent->new();
@@ -236,14 +190,6 @@ sub ua {
 sub json {
     my ($self) = @_;
     return $self->{json} //= JSON->new()->allow_nonref()->pretty()->convert_blessed();
-}
-
-sub warn_1 {
-    my ($self, $format, @args) = @_;
-    chomp($format);
-    if ($self->{verbose} >= 1) {
-        warn(sprintf($format . "\n", @args));
-    }
 }
 
 1;                              # End of Geo::GTFS2::Realtime
