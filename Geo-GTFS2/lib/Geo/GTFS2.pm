@@ -246,28 +246,12 @@ sub process_protocol_buffers {
 
     stat($pb_filename);
     if (!($cached && -e _ && defined $content_length && $content_length == (stat(_))[7])) {
-        my $fh;
-        make_path(dirname($pb_filename));
-        if (open($fh, ">", $pb_filename)) {
-            warn("Writing $pb_filename ...\n");
-            binmode($fh);
-            print {$fh} $$cref;
-            close($fh);
-        } else {
-            die("Cannot write $pb_filename: $!\n");
+        if ($self->{write_pb}) {
+            $self->write_pb($pb_filename, $cref);
         }
-	if ($self->{write_json}) {
-	    make_path(dirname($json_filename));
-	    if (open($fh, ">", $json_filename)) {
-		warn("Writing $json_filename ...\n");
-		binmode($fh);
-		print {$fh} $self->json->encode($o);
-		close($fh);
-	    } else {
-		die("Cannot write $pb_filename: $!\n");
-	    }
-	}
-        warn("Done.\n");
+        if ($self->{write_json}) {
+            $self->write_json($json_filename, $o);
+        }
     }
 
     $self->{geo_gtfs_realtime_feed_id} =
@@ -281,6 +265,30 @@ sub process_protocol_buffers {
                                                                        $header_timestamp);
 
     return $o;
+}
+
+sub write_pb {
+    my ($self, $filename, $cref) = @_;
+    make_path(dirname($filename));
+    if (open(my $fh, ">", $filename)) {
+        warn("Writing $filename ...\n");
+        binmode($fh);
+        print {$fh} $$cref;
+    } else {
+        die("Cannot write $filename: $!\n");
+    }
+}
+
+sub write_json {
+    my ($self, $filename, $o) = @_;
+    make_path(dirname($filename));
+    if (open(my $fh, ">", $filename)) {
+        warn("Writing $filename ...\n");
+        binmode($fh);
+        print {$fh} $self->json->encode($o);
+    } else {
+        die("Cannot write $filename: $!\n");
+    }
 }
 
 ###############################################################################
