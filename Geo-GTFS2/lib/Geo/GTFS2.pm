@@ -161,13 +161,21 @@ sub process_not_yet_known_content {
 # GTFS-REALTIME
 ###############################################################################
 
-sub pull_gtfs_realtime_protocol {
+sub force_pull_gtfs_realtime_protocol {
     my ($self) = @_;
-    return 1 if $self->{gtfs_realtime_protocol_pulled};
+    $self->pull_gtfs_realtime_protocol(force => 1);
+}
+
+sub pull_gtfs_realtime_protocol {
+    my ($self, %options) = @_;
+    if (!$options{force}) {
+        return 1 if $self->{gtfs_realtime_protocol_pulled};
+    }
     HTTP::Cache::Transparent::init({ BasePath => $self->{http_cache_dir},
 				     Verbose => 1,
-				     NoUpdate => 86400,
-				     UseCacheOnTimeout => 1,
+				     $options{force} ? () : (NoUpdate => 86400),
+                                     $options{force} ? (MaxAge => 0) : (),
+				     $options{force} ? () : (UseCacheOnTimeout => 1),
 				     NoUpdateImpatient => 0 });
     warn("    Pulling GTFS-realtime protocol...\n");
     my $request = HTTP::Request->new("GET", $self->{gtfs_realtime_proto});
@@ -225,17 +233,17 @@ sub process_protocol_buffers {
 
     stat($pb_filename);
     if (!($cached && -e _ && defined $content_length && $content_length == (stat(_))[7])) {
-	{
-	    make_path(dirname($pb_filename));
-	    if (open(my $fh, ">", $pb_filename)) {
-		warn("Writing $pb_filename ...\n");
-		binmode($fh);
-		print {$fh} $$cref;
-		close($fh);
-	    } else {
-		die("Cannot write $pb_filename: $!\n");
-	    }
-	}
+        {
+            make_path(dirname($pb_filename));
+            if (open(my $fh, ">", $pb_filename)) {
+                warn("Writing $pb_filename ...\n");
+                binmode($fh);
+                print {$fh} $$cref;
+                close($fh);
+            } else {
+                die("Cannot write $pb_filename: $!\n");
+            }
+        }
 	if (0) {
 	    make_path(dirname($json_filename));
 	    if (open(my $fh, ">", $json_filename)) {
@@ -247,7 +255,7 @@ sub process_protocol_buffers {
 		die("Cannot write $pb_filename: $!\n");
 	    }
 	}
-	warn("Done.\n");
+        warn("Done.\n");
     }
 
     $self->{geo_gtfs_realtime_feed_id} =
