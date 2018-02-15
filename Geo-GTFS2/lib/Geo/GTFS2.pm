@@ -44,6 +44,8 @@ BEGIN {
 			 header
 			 headers
 
+                         write_json
+
 			 geo_gtfs_agency_name
 			 geo_gtfs_agency_id
 			 geo_gtfs_feed_id
@@ -244,20 +246,19 @@ sub process_protocol_buffers {
 
     stat($pb_filename);
     if (!($cached && -e _ && defined $content_length && $content_length == (stat(_))[7])) {
-        {
-            make_path(dirname($pb_filename));
-            if (open(my $fh, ">", $pb_filename)) {
-                warn("Writing $pb_filename ...\n");
-                binmode($fh);
-                print {$fh} $$cref;
-                close($fh);
-            } else {
-                die("Cannot write $pb_filename: $!\n");
-            }
+        my $fh;
+        make_path(dirname($pb_filename));
+        if (open($fh, ">", $pb_filename)) {
+            warn("Writing $pb_filename ...\n");
+            binmode($fh);
+            print {$fh} $$cref;
+            close($fh);
+        } else {
+            die("Cannot write $pb_filename: $!\n");
         }
-	if (0) {
+	if ($self->{write_json}) {
 	    make_path(dirname($json_filename));
-	    if (open(my $fh, ">", $json_filename)) {
+	    if (open($fh, ">", $json_filename)) {
 		warn("Writing $json_filename ...\n");
 		binmode($fh);
 		print {$fh} $self->json->encode($o);
