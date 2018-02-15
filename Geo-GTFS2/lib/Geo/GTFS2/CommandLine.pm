@@ -108,6 +108,11 @@ sub cmd__url {
     $self->gtfs2->process_url($url);
 }
 
+sub cmd__force_pull_gtfs_realtime_protocol {
+    my ($self) = @_;
+    $self->gtfs2->force_pull_gtfs_realtime_protocol();
+}
+
 sub cmd__AUTOLOAD {
     my ($self, $agency_name, $command, @args) = @_;
     if (defined $agency_name &&
