@@ -98,6 +98,12 @@ sub process_url {
 					 NoUpdate => 30,
 					 NoUpdateImpatient => 1 });
 	$ua->show_progress(1);
+    } elsif ($url =~ m{\.json$}) {
+	HTTP::Cache::Transparent::init({ BasePath => $self->{http_cache_dir},
+					 Verbose => 0,
+					 NoUpdate => 30,
+					 NoUpdateImpatient => 1 });
+	$ua->show_progress(1);
     } elsif ($url =~ m{\.zip$}) {
 	HTTP::Cache::Transparent::init({ BasePath => $self->{http_cache_dir},
 					 Verbose => 1 });
@@ -112,16 +118,22 @@ sub process_url {
     }
     if ($response->content_type eq "application/x-zip-compressed") {
 	return $self->process_gtfs_feed($request, $response);
+    } elsif ($response->content_type eq "application/json") {
+	return $self->process_gtfs_realtime_data($request, $response);
     } elsif ($response->content_type eq "application/protobuf") {
-	return $self->process_protocol_buffers($request, $response);
+	return $self->process_gtfs_realtime_data($request, $response);
     } elsif ($response->base =~ m{\.zip$}i) {
 	return $self->process_gtfs_feed($request, $response);
     } elsif ($response->base =~ m{\.pb$}i) {
-	return $self->process_protocol_buffers($request, $response);
+	return $self->process_gtfs_realtime_data($request, $response);
+    } elsif ($response->base =~ m{\.json$}i) {
+	return $self->process_gtfs_realtime_data($request, $response);
     } elsif ($url =~ m{\.zip$}i) {
 	return $self->process_gtfs_feed($request, $response);
     } elsif ($url =~ m{\.pb$}i) {
-	return $self->process_protocol_buffers($request, $response);
+	return $self->process_gtfs_realtime_data($request, $response);
+    } elsif ($url =~ m{\.json$}i) {
+	return $self->process_gtfs_realtime_data($request, $response);
     } else {
 	return $self->process_not_yet_known_content($request, $response);
     }
@@ -133,7 +145,9 @@ sub process_not_yet_known_content {
     my $cref = $response->content_ref;
     my $type = $self->{magic}->checktype_contents($$cref);
     if ($type eq "application/protobuf") {
-	return $self->process_protocol_buffers($request, $response);
+	return $self->process_gtfs_realtime_data($request, $response);
+    } elsif ($type eq "application/json") {
+	return $self->process_gtfs_realtime_data($request, $response);
     } elsif ($type eq "application/x-zip-compressed") {
 	return $self->process_gtfs_feed($request, $response);
     } else {
@@ -185,9 +199,8 @@ sub pull_gtfs_realtime_protocol {
     $self->{gtfs_realtime_protocol_pulled} = 1;
 }
 
-sub process_protocol_buffers {
+sub process_gtfs_realtime_data {
     my ($self, $request, $response) = @_;
-    $self->pull_gtfs_realtime_protocol();
     my $url = $response->base;
     my $cached = ($response->code == 304 || ($response->header("X-Cached") && $response->header("X-Content-Unchanged")));
     my $cref = $response->content_ref;
@@ -209,7 +222,17 @@ sub process_protocol_buffers {
     my $last_modified  = $response->last_modified // -1;
     my $content_length = $response->content_length;
 
-    my $o = TransitRealtime::FeedMessage->decode($$cref);
+    my $o;
+
+    if ($response->content_type eq "application/protobuf") {
+        $self->pull_gtfs_realtime_protocol();
+        $o = TransitRealtime::FeedMessage->decode($$cref);
+    } elsif ($response->content_type eq "application/json") {
+        $o = $self->json->decode($response->decoded_content);
+    } else {
+        die("Unrecognized MIME type " . $response->content_type . "\n");
+    }
+
     my $header_timestamp = $o->{header}->{timestamp};
     my $base_filename = strftime("%Y/%m/%d/%H%M%SZ", gmtime($header_timestamp // $last_modified));
     my $pb_filename     = sprintf("%s/data/%s/pb/%s/%s.pb",     $self->{dir}, $self->{geo_gtfs_agency_name}, $feed_type, $base_filename);

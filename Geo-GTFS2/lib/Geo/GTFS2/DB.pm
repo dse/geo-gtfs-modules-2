@@ -6,7 +6,7 @@ use DBI;
 use File::Basename qw(dirname basename);
 use File::Path qw(make_path);
 use HTTP::Date qw(str2time);
-use POSIX qw(strftime floor uname);
+use POSIX qw(strftime floor);
 
 use fields qw(dir
 	      sqlite_filename
@@ -852,7 +852,7 @@ sub select_geo_gtfs_agency_by_id {
 
 sub select_or_insert_geo_gtfs_agency_id {
     my ($self, $geo_gtfs_agency_name) = @_;
-    return $geo_gtfs_agency_name if $geo_gtfs_agency_name =~ m{^\d+$};
+    return $geo_gtfs_agency_name if defined $geo_gtfs_agency_name && $geo_gtfs_agency_name =~ m{^\d+$};
     return $self->select_or_insert_id("table_name" => "geo_gtfs_agency",
 				      "id_name" => "id",
 				      "key_fields" => { "name" => $geo_gtfs_agency_name });
