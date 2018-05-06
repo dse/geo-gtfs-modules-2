@@ -11,6 +11,7 @@ use Data::Dumper;
 
 use fields qw(dir
 	      sqlite_filename
+              verbose
 	      dbh);
 
 use vars qw($TABLES $INDEXES);
@@ -407,8 +408,10 @@ sub dbh {
     }
 
     $CONNECTIONS->{$$} = {};
+    warn(sprintf("Connecting to %s ...\n", $dbfile)) if $self->{verbose} || -t 2;
     my $dbh = DBI->connect("dbi:SQLite:$dbfile", "", "",
                            { RaiseError => 1, AutoCommit => 0 });
+    warn(sprintf("... connected!\n", $dbfile)) if $self->{verbose} || -t 2;
     $dbh->sqlite_busy_timeout(5000);
     $CONNECTIONS->{$$}->{dbh} = $dbh;
     if (!$CONNECTIONS->{$$}->{tables_created}) {
@@ -482,18 +485,25 @@ sub select_or_insert_id {
 sub drop_tables {
     my ($self) = @_;
     my $dbh = $self->dbh;
-    print STDERR ("Dropping database tables...\n");
-    $self->execute_multiple_sql_queries(<<"END");
-END
+    foreach my $sql ($self->sql_to_drop_tables) {
+        warn($sql) if $self->{verbose} || -t 2;
+        $self->dbh->do($sql);
+    }
+    warn("Committing...\n") if $self->{verbose} || -t 2;
+    $self->dbh->commit();
+    warn("...done!\n") if $self->{verbose} || -t 2;
 }
 
 sub create_tables {
     my ($self) = @_;
     my $dbh = $self->dbh;
-    print STDERR ("Creating database tables...\n");
-    my $sql = <<"END";
-END
-    $self->execute_multiple_sql_queries($sql);
+    foreach my $sql ($self->sql_to_create_tables) {
+        warn($sql) if $self->{verbose} || -t 2;
+        $self->dbh->do($sql);
+    }
+    warn("Committing...\n") if $self->{verbose} || -t 2;
+    $self->dbh->commit();
+    warn("...done!\n") if $self->{verbose} || -t 2;
 }
 
 use Carp qw();
@@ -988,7 +998,7 @@ sub sql_to_create_table {
     my @result;
 
     my $sql;
-    $sql = sprintf("create table if not exists %s(\n",
+    $sql = sprintf("create table if not exists %s (\n",
                    $self->quote_table_name($table->{name}));
     my @spec = map { $self->sql_to_specify_table_column($_) }
         @{$table->{columns}};
