@@ -106,6 +106,7 @@ BEGIN {
         },
         {
             "name" => "gtfs_agency",
+            "gtfs_required" => 1,
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
 
@@ -117,6 +118,7 @@ BEGIN {
                 { "name" => "agency_lang",               "type" => "varchar", "size" => 2, "nullable" => 1 },
                 { "name" => "agency_phone",              "type" => "text",                 "nullable" => 1 },
                 { "name" => "agency_fare_url",           "type" => "text",                 "nullable" => 1 },
+                { "name" => "agency_email",              "type" => "text",                 "nullable" => 1 }, # new in 2018
             ],
             "indexes" => [
                 { "name" => "gtfs_agency_01", "columns" => [ "geo_gtfs_feed_instance_id", "agency_id" ], "unique" => 1 },
@@ -124,6 +126,7 @@ BEGIN {
         },
         {
             "name" => "gtfs_stops",
+            "gtfs_required" => 1,
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
                 { "name" => "stop_id",                   "type" => "text",    "nullable" => 0 },
@@ -149,6 +152,7 @@ BEGIN {
         },
         {
             "name" => "gtfs_routes",
+            "gtfs_required" => 1,
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
                 { "name" => "route_id",                  "type" => "text",                 "nullable" => 0 },
@@ -160,16 +164,19 @@ BEGIN {
                 { "name" => "route_url",                 "type" => "text",                 "nullable" => 1 },
                 { "name" => "route_color",               "type" => "varchar", "size" => 6, "nullable" => 1 },
                 { "name" => "route_text_color",          "type" => "varchar", "size" => 6, "nullable" => 1 },
+                { "name" => "route_sort_order",          "type" => "integer",              "nullable" => 1 }, # new for 2018
             ],
             "indexes" => [
                 { "name" => "gtfs_routes_01", "columns" => [ "geo_gtfs_feed_instance_id", "route_id", "agency_id" ], "unique" => 1 },
                 { "name" => "gtfs_routes_02", "columns" => [ "geo_gtfs_feed_instance_id", "agency_id" ] },
                 { "name" => "gtfs_routes_03", "columns" => [ "geo_gtfs_feed_instance_id", "route_id" ] },
                 { "name" => "gtfs_routes_04", "columns" => [ "geo_gtfs_feed_instance_id", "route_type" ] },
+                { "name" => "gtfs_routes_05", "columns" => [ "geo_gtfs_feed_instance_id", "route_sort_order" ] }, # new for 2018
             ]
         },
         {
             "name" => "gtfs_trips",
+            "gtfs_required" => 1,
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
                 { "name" => "route_id",                  "type" => "text",    "nullable" => 0, "references" => { "table" => "gtfs_routes", "column" => "id" } },
@@ -194,6 +201,7 @@ BEGIN {
         },
         {
             "name" => "gtfs_stop_times",
+            "gtfs_required" => 1,
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
                 { "name" => "trip_id",                   "type" => "text",                 "nullable" => 0, "references" => { "table" => "gtfs_trips", "column" => "id" } },
@@ -205,16 +213,19 @@ BEGIN {
                 { "name" => "pickup_type",               "type" => "integer",              "nullable" => 1 },
                 { "name" => "drop_off_type",             "type" => "integer",              "nullable" => 1 },
                 { "name" => "shape_dist_traveled",       "type" => "numeric",              "nullable" => 1 },
+                { "name" => "timepoint",                 "type" => "integer",              "nullable" => 1 }, # new for 2018
             ],
             "indexes" => [
                 { "name" => "gtfs_stop_times_01", "columns" => [ "geo_gtfs_feed_instance_id", "stop_id" ] },
                 { "name" => "gtfs_stop_times_02", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id" ] },
                 { "name" => "gtfs_stop_times_03", "columns" => [ "geo_gtfs_feed_instance_id", "stop_sequence" ] },
-                { "name" => "gtfs_stop_times_01", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id", "stop_id" ], "unique" => 1 },
+                { "name" => "gtfs_stop_times_04", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id", "stop_id" ], "unique" => 1 },
+                { "name" => "gtfs_stop_times_05", "columns" => [ "geo_gtfs_feed_instance_id", "timepoint" ] }, # new for 2018
             ]
         },
         {
             "name" => "gtfs_calendar",
+            "gtfs_required" => 1,
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
                 { "name" => "service_id",                "type" => "text",                 "nullable" => 0 },
@@ -264,6 +275,7 @@ BEGIN {
                 { "name" => "currency_type",             "type" => "text",    "nullable" => 0 },
                 { "name" => "payment_method",            "type" => "integer", "nullable" => 0 },
                 { "name" => "transfers",                 "type" => "integer", "nullable" => 0 },
+                { "name" => "agency_id",                 "type" => "text",    "nullable" => 1 },
                 { "name" => "transfer_duration",         "type" => "integer", "nullable" => 1 },
             ],
             "indexes" => [
@@ -964,6 +976,10 @@ sub select_or_insert_geo_gtfs_agency_id {
 				      "id_name" => "id",
 				      "key_fields" => { "name" => $geo_gtfs_agency_name });
 }
+
+###############################################################################
+# DATABASE
+###############################################################################
 
 sub sql_to_drop_tables {
     my ($self) = @_;
