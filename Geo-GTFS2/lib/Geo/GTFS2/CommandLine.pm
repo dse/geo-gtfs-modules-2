@@ -12,7 +12,7 @@ sub __init {
 sub gtfs2 {
     my ($self) = @_;
     return $self->{gtfs2} if $self->{gtfs2};
-    return $self->{gtfs2} = Geo::GTFS2->new();
+    return $self->{gtfs2} = Geo::GTFS2->new(no_auto_update => 1);
 }
 
 # sub cmd__update_realtime {
@@ -130,6 +130,14 @@ sub cmd__print_sql_to_create_tables {
 sub cmd__print_sql_to_drop_tables {
     my ($self) = @_;
     my @sql = $self->gtfs2->sql_to_drop_tables;
+    foreach my $sql (@sql) {
+        print $sql;
+    }
+}
+
+sub cmd__print_sql_to_update_tables {
+    my ($self) = @_;
+    my @sql = $self->gtfs2->sql_to_update_tables;
     foreach my $sql (@sql) {
         print $sql;
     }
