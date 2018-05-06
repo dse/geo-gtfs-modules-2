@@ -366,8 +366,18 @@ sub dbh {
 
 sub db {
     my ($self) = @_;
-    return $self->{db} if $self->{db};
-    return $self->{db} = Geo::GTFS2::DB->new();
+    return $self->{db} //= Geo::GTFS2::DB->new();
+}
+
+sub close_db {
+    my ($self) = @_;
+    delete $self->{db};
+}
+
+sub DESTROY {
+    my ($self) = @_;
+    warn("$self DESTROY");
+    $self->close_db();
 }
 
 1;                              # End of Geo::GTFS2

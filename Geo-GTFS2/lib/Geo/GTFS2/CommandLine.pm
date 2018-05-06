@@ -108,6 +108,12 @@ sub cmd__url {
     $self->gtfs2->process_url($url);
 }
 
+sub cmd__realtime_url {
+    my ($self, $geo_gtfs_agency_name, $url) = @_;
+    $self->gtfs2->set_agency($geo_gtfs_agency_name);
+    $self->gtfs2->process_realtime_url($url);
+}
+
 sub cmd__force_pull_gtfs_realtime_protocol {
     my ($self) = @_;
     $self->gtfs2->force_pull_gtfs_realtime_protocol();

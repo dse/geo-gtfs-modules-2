@@ -7,6 +7,7 @@ use File::Basename qw(dirname basename);
 use File::Path qw(make_path);
 use HTTP::Date qw(str2time);
 use POSIX qw(strftime floor);
+use Data::Dumper;
 
 use fields qw(dir
 	      sqlite_filename
@@ -21,15 +22,11 @@ sub new {
 
 sub init {
     my ($self, %args) = @_;
-
     my @pwent = getpwuid($>);
-    
     while (my ($k, $v) = each(%args)) {
 	$self->{$k} = $v;
     }
-
     my $dir;
-
     my $username = $pwent[0];
     if ($username eq "_www") { # special os x user
 	$dir = $self->{dir} //= "/Users/_www/.geo-gtfs2";
@@ -37,21 +34,46 @@ sub init {
 	my $HOME = $ENV{HOME} // $pwent[7];
 	$dir = $self->{dir} //= "$HOME/.geo-gtfs2";
     }
-
     my $dbfile = $self->{sqlite_filename} //= "$dir/google_transit.sqlite";
+}
+
+our $CONNECTIONS;
+BEGIN {
+    $CONNECTIONS = {};
 }
 
 sub dbh {
     my ($self) = @_;
-    if ($self->{dbh}) {
-	return $self->{dbh};
-    }
+    return $CONNECTIONS->{$$}->{dbh} if eval { $CONNECTIONS->{$$}->{dbh}; };
+
     my $dbfile = $self->{sqlite_filename};
     make_path(dirname($dbfile));
-    $self->{dbh} = DBI->connect("dbi:SQLite:$dbfile", "", "",
-				{ RaiseError => 1, AutoCommit => 0 });
-    $self->create_tables();
-    return $self->{dbh};
+
+    # delete database connections in case they were created before a
+    # fork.
+    my @pids = keys %$CONNECTIONS;
+    my @other_pids = grep { $_ ne $$ } @pids;
+    foreach my $pid (@other_pids) {
+        delete $CONNECTIONS->{$pid};
+    }
+
+    $CONNECTIONS->{$$} = {};
+    my $dbh = DBI->connect("dbi:SQLite:$dbfile", "", "",
+                           { RaiseError => 1, AutoCommit => 0 });
+    $dbh->sqlite_busy_timeout(5000);
+    $CONNECTIONS->{$$}->{dbh} = $dbh;
+    if (!$CONNECTIONS->{$$}->{tables_created}) {
+        $self->create_tables();
+        $CONNECTIONS->{$$}->{tables_created} = 1;
+    }
+    return $dbh;
+}
+
+sub close_dbh {
+    my ($self) = @_;
+    eval { $CONNECTIONS->{$$}->{dbh}->rollback(); };
+    eval { delete $CONNECTIONS->{$$}->{dbh}; };
+    eval { delete $CONNECTIONS->{$$}; };
 }
 
 sub select_or_insert_id {
@@ -110,7 +132,7 @@ sub select_or_insert_id {
 
 sub drop_tables {
     my ($self) = @_;
-    my $dbh = $self->{dbh};
+    my $dbh = $self->dbh;
     print STDERR ("Dropping database tables...\n");
     $self->execute_multiple_sql_queries(<<"END");
 drop table if exists geo_gtfs;
@@ -398,20 +420,19 @@ END
     $self->execute_multiple_sql_queries($sql);
 }
 
+use Carp qw();
+
 sub execute_multiple_sql_queries {
     my ($self, $sql) = @_;
-    $sql =~ s{--.*?$}{}gsm;
-    my @sql = split(qr{;$}m, $sql);
+    # This function makes a couple of gratuitous assumtions:
+    # 1. that "--" does not occur in a string
+    # 2. that ; at the end of a line is a statement separator
+    $sql =~ s{--.*?$}{}gsm;            # Assumption 1.
+    my @sql = split(qr{;\s*$}m, $sql); # Assumption 2.
     foreach my $sql (@sql) {
-	next unless $sql =~ m{\S};
-	my $short = $sql;
-	$short =~ s{\s+}{ }gsm;
-	$short =~ s{\(.*}{};
-	eval { $self->dbh->do($sql); };
-	if ($@) {
-	    my $error = $@;
-	    die($error);
-	}
+	next unless $sql =~ m{\S}; # ignore blank strings.
+	local $SIG{__DIE__} = sub { Carp::confess(@_); };
+        $self->dbh->do($sql);
     }
     $self->dbh->commit();
 }
@@ -864,11 +885,7 @@ sub select_or_insert_geo_gtfs_agency_id {
 
 sub DESTROY {
     my ($self) = @_;
-    my $dbh = $self->{dbh};
-    if ($dbh) {
-	$dbh->rollback();
-    }
-    # STFU: Issuing rollback() due to DESTROY without explicit disconnect() of DBD::SQLite::db handle /Users/dse/.geo-gtfs2/google_transit.sqlite.
+    $self->close_dbh();
 }
 
 =head1 NAME
