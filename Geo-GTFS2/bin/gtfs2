@@ -1,4 +1,4 @@
-#!/usr/bin/perl
+#!/usr/bin/env perl
 use warnings;
 use strict;
 
@@ -9,10 +9,16 @@ BEGIN {
     }
 }
 
-use lib "/home/dse/git/geo-gtfs-modules-2/Geo-GTFS2/lib";
-use lib "/Users/dse/git/geo-gtfs-modules-2/Geo-GTFS2/lib";
-use lib "/home/dse/git/perl-app-thingy/lib";
-use lib "/Users/dse/git/perl-app-thingy/lib";
+BEGIN {
+    require lib;
+    if (-d "/home/dse") {
+        import lib "/home/dse/git/geo-gtfs-modules-2/Geo-GTFS2/lib";
+        import lib "/home/dse/git/perl-app-thingy/lib";
+    } elsif (-d "/Users/dse") {
+        import lib "/Users/dse/git/geo-gtfs-modules-2/Geo-GTFS2/lib";
+        import lib "/Users/dse/git/perl-app-thingy/lib";
+    }
+}
 
 use FindBin;
 use lib "$FindBin::Bin/../lib";
