@@ -110,12 +110,14 @@ sub process_url {
 	$ua->show_progress(1);
     }
     my $request = HTTP::Request->new("GET", $url);
+    warn(sprintf("GET %s ...\n", $url)) if $self->{verbose} || -t 2;
     my $response = $ua->request($request);
     $request->header("Date-Epoch", time());
     if (!$response->is_success) {
 	warn(sprintf("%s => %s\n", $response->base, $response->status_line));
 	return;
     }
+    warn(sprintf("... %s\n", $response->status_line)) if $self->{verbose} || -t 2;
     if ($response->content_type eq "application/x-zip-compressed") {
 	return $self->process_gtfs_feed($request, $response);
     } elsif ($response->base =~ m{\.zip$}i) {
