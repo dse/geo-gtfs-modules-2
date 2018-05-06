@@ -12,6 +12,7 @@ use Data::Dumper;
 use fields qw(dir
 	      sqlite_filename
               verbose
+              no_auto_update
 	      dbh);
 
 use vars qw($TABLES $INDEXES);
@@ -423,12 +424,14 @@ sub dbh {
     warn(sprintf("Connecting to %s ...\n", $dbfile)) if $self->{verbose} || -t 2;
     my $dbh = DBI->connect("dbi:SQLite:$dbfile", "", "",
                            { RaiseError => 1, AutoCommit => 0 });
-    warn(sprintf("... connected!\n", $dbfile)) if $self->{verbose} || -t 2;
+    warn(sprintf("... connected!\n")) if $self->{verbose} || -t 2;
     $dbh->sqlite_busy_timeout(5000);
     $CONNECTIONS->{$$}->{dbh} = $dbh;
-    if (!$CONNECTIONS->{$$}->{tables_created}) {
-        $self->create_tables();
-        $CONNECTIONS->{$$}->{tables_created} = 1;
+    if (!$self->{no_auto_update}) {
+        if (!$CONNECTIONS->{$$}->{tables_created}) {
+            $self->create_tables();
+            $CONNECTIONS->{$$}->{tables_created} = 1;
+        }
     }
     return $dbh;
 }
@@ -510,6 +513,18 @@ sub create_tables {
     my ($self) = @_;
     my $dbh = $self->dbh;
     foreach my $sql ($self->sql_to_create_tables) {
+        warn($sql) if $self->{verbose} || -t 2;
+        $self->dbh->do($sql);
+    }
+    warn("Committing...\n") if $self->{verbose} || -t 2;
+    $self->dbh->commit();
+    warn("...done!\n") if $self->{verbose} || -t 2;
+}
+
+sub update_tables {
+    my ($self) = @_;
+    my $dbh = $self->dbh;
+    foreach my $sql ($self->sql_to_update_tables) {
         warn($sql) if $self->{verbose} || -t 2;
         $self->dbh->do($sql);
     }
@@ -981,6 +996,71 @@ sub select_or_insert_geo_gtfs_agency_id {
 # DATABASE
 ###############################################################################
 
+sub sql_to_update_tables {
+    my ($self) = @_;
+    my @result;
+    foreach my $table (@{$TABLES}) {
+        my $sth = $self->dbh->table_info(undef, undef, $table->{name}, "TABLE");
+        my $row = $sth->fetchrow_hashref;
+        if (!$row) {
+            push(@result, $self->sql_to_create_table($table));
+        } else {
+            push(@result, $self->sql_to_alter_table($table));
+        }
+    }
+    foreach my $index (@{$INDEXES}) {
+        if (!$self->get_index_info(undef, $index, 1)) {
+            push(@result, $self->sql_to_create_index($index));
+        }
+    }
+    return @result if wantarray;
+    return \@result;
+}
+
+sub sql_to_alter_table {
+    my ($self, $table) = @_;
+    my @result;
+    foreach my $column (@{$table->{columns}}) {
+        my $sth = $self->dbh->column_info(undef, undef, $table->{name}, $column->{name});
+        my $row = $sth->fetchrow_hashref;
+        if (!$row) {
+            push(@result, $self->sql_to_alter_table_add_column($table, $column));
+        }
+    }
+  index:
+    foreach my $index (@{$table->{indexes}}) {
+        my $sth = $self->dbh->statistics_info(undef, undef, $table->{name}, 0, 0);
+        if (!$self->get_index_info($table, $index, 1)) {
+            push(@result, $self->sql_to_create_index($index));
+        }
+    }
+    return @result if wantarray;
+    return \@result;
+}
+
+sub get_index_info {
+    my ($self, $table, $index, $wantflag) = @_;
+    my @result;
+    my $sth = $self->dbh->statistics_info(undef, undef, $index->{table} // $table->{name}, 0, 0);
+    while (my $row = $sth->fetchrow_hashref) {
+        if ($row->{INDEX_NAME} eq $index->{name}) {
+            return 1 if $wantflag;
+            push(@result, $row);
+        }
+    }
+    return 0 if $wantflag;
+    return @result if wantarray;
+    return \@result;
+}
+
+sub sql_to_alter_table_add_column {
+    my ($self, $table, $column) = @_;
+    my $sql = sprintf("alter table %s add column %s;\n",
+                      $self->dbh->quote_identifier($table->{name}),
+                      $self->sql_to_specify_table_column($column));
+    return $sql;
+}
+
 sub sql_to_drop_tables {
     my ($self) = @_;
     my @result;
@@ -1038,6 +1118,7 @@ sub sql_to_create_table {
     return \@result;
 }
 
+# column definition
 sub sql_to_specify_table_column {
     my ($self, $column) = @_;
     my $spec = sprintf("%s", $self->quote_column_name($column->{name}));
