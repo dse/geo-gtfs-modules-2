@@ -33,6 +33,7 @@ BEGIN {
                      ua
                      magic
                      json
+                     no_auto_update
 
                      gtfs_realtime_proto
                      gtfs_realtime_protocol_pulled
@@ -369,6 +370,11 @@ sub sql_to_drop_tables {
     return $self->db->sql_to_drop_tables;
 }
 
+sub sql_to_update_tables {
+    my ($self) = @_;
+    return $self->db->sql_to_update_tables;
+}
+
 use Geo::GTFS2::DB;
 
 sub dbh {
@@ -378,7 +384,8 @@ sub dbh {
 
 sub db {
     my ($self) = @_;
-    return $self->{db} //= Geo::GTFS2::DB->new();
+    return $self->{db} //=
+        Geo::GTFS2::DB->new(no_auto_update => $self->{no_auto_update});
 }
 
 sub close_db {
@@ -388,7 +395,6 @@ sub close_db {
 
 sub DESTROY {
     my ($self) = @_;
-    warn("$self DESTROY");
     $self->close_db();
 }
 
