@@ -119,6 +119,22 @@ sub cmd__force_pull_gtfs_realtime_protocol {
     $self->gtfs2->force_pull_gtfs_realtime_protocol();
 }
 
+sub cmd__print_sql_to_create_tables {
+    my ($self) = @_;
+    my @sql = $self->gtfs2->sql_to_create_tables;
+    foreach my $sql (@sql) {
+        print $sql;
+    }
+}
+
+sub cmd__print_sql_to_drop_tables {
+    my ($self) = @_;
+    my @sql = $self->gtfs2->sql_to_drop_tables;
+    foreach my $sql (@sql) {
+        print $sql;
+    }
+}
+
 sub cmd__AUTOLOAD {
     my ($self, $agency_name, $command, @args) = @_;
     if (defined $agency_name &&

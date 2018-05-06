@@ -13,6 +13,355 @@ use fields qw(dir
 	      sqlite_filename
 	      dbh);
 
+use vars qw($TABLES $INDEXES);
+
+BEGIN {
+    $TABLES = [
+        {
+            "name" => "geo_gtfs",
+            "columns" => [
+                { "name" => "name",  "type" => "varchar", "size" => 32, "nullable" => 0, "primary_key" => 1 },
+                { "name" => "value", "type" => "text",                  "nullable" => 1 },
+            ],
+            # delete from geo_gtfs where name = 'geo_gtfs.db.version';
+            # insert into geo_gtfs (name, value) values('geo_gtfs.db.version', '0.1');
+        },
+        {
+            "name" => "geo_gtfs_agency",
+            "columns" => [
+                { "name" => "id",   "type" => "integer", "nullable" => 0, "primary_key" => 1, "auto_increment" => 1 },
+
+                # preferably the transit agency's domain name, without a
+                # "www." prefix.  examples: 'ridetarc.org', 'ttc.ca'
+                { "name" => "name", "type" => "varchar", "size" => 64, "nullable" => 0 },
+            ],
+            "indexes" => [
+                { "name" => "geo_gtfs_agency_01", "columns" => [ "name" ] },
+            ]
+        },
+        {
+            "name" => "geo_gtfs_feed",
+            "columns" => [
+                { "name" => "id",                 "type" => "integer", "nullable" => 0, "primary_key" => 1, "auto_increment" => 1 },
+                { "name" => "geo_gtfs_agency_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_agency", "column" => "id" } },
+                { "name" => "url",                "type" => "text",    "nullable" => 0 },
+
+                # updated when feeds added, removed, I guess.
+                { "name" => "is_active",          "type" => "integer", "nullable" => 0, "default" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "geo_gtfs_feed_01", "columns" => [ "is_active" ] },
+            ]
+        },
+        {
+            "name" => "geo_gtfs_feed_instance",
+            "columns" => [
+                { "name" => "id",               "type" => "integer", "nullable" => 0, "primary_key" => 1, "auto_increment" => 1 },
+                { "name" => "geo_gtfs_feed_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "filename",         "type" => "text",    "nullable" => 0 },
+                { "name" => "retrieved",        "type" => "integer", "nullable" => 0 },
+
+                # SHOULD be specified, but some servers omit.
+                { "name" => "last_modified",    "type" => "integer", "nullable" => 1 },
+
+                { "name" => "is_latest",        "type" => "integer", "nullable" => 0, "default" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "geo_gtfs_feed_instance_01", "columns" => [ "is_latest" ] },
+            ]
+        },
+        {
+            "name" => "geo_gtfs_realtime_feed",
+            "columns" => [
+                { "name" => "id",                 "type" => "integer",               "nullable" => 0, "primary_key" => 1 },
+                { "name" => "geo_gtfs_agency_id", "type" => "integer",               "nullable" => 0, "references" => { "table" => "geo_gtfs_agency", "column" => "id" } },
+                { "name" => "url",                "type" => "text",                  "nullable" => 0 },
+
+                # 'updates', 'positions', 'alerts', 'all'
+                { "name" => "feed_type",          "type" => "varchar", "size" => 16, "nullable" => 0 },
+
+                # updated when feeds added, removed
+                { "name" => "is_active",          "type" => "integer",               "nullable" => 0, "default" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "geo_gtfs_realtime_feed_01", "columns" => [ "feed_type" ] },
+                { "name" => "geo_gtfs_realtime_feed_02", "columns" => [ "is_active" ] },
+            ]
+        },
+        {
+            "name" => "geo_gtfs_realtime_feed_instance",
+            "columns" => [
+                { "name" => "id",                        "type" => "integer", "nullable" => 0, "primary_key" => 1 },
+                { "name" => "geo_gtfs_realtime_feed_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_realtime_feed", "column" => "id" } },
+                { "name" => "filename",                  "type" => "text",    "nullable" => 0 },
+                { "name" => "retrieved",                 "type" => "integer", "nullable" => 0 },
+                { "name" => "last_modified",             "type" => "integer", "nullable" => 1 },
+                { "name" => "header_timestamp",          "type" => "integer", "nullable" => 1 },
+                { "name" => "is_latest",                 "type" => "integer", "nullable" => 0, "default" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "geo_gtfs_realtime_feed_instance_01", "columns" => [ "is_latest" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_agency",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+
+                # for feeds containing only one agency, this can be NULL.
+                { "name" => "agency_id",                 "type" => "text",                 "nullable" => 1 },
+                { "name" => "agency_name",               "type" => "text",                 "nullable" => 0 },
+                { "name" => "agency_url",                "type" => "text",                 "nullable" => 0 },
+                { "name" => "agency_timezone",           "type" => "text",                 "nullable" => 0 },
+                { "name" => "agency_lang",               "type" => "varchar", "size" => 2, "nullable" => 1 },
+                { "name" => "agency_phone",              "type" => "text",                 "nullable" => 1 },
+                { "name" => "agency_fare_url",           "type" => "text",                 "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_agency_01", "columns" => [ "geo_gtfs_feed_instance_id", "agency_id" ], "unique" => 1 },
+            ]
+        },
+        {
+            "name" => "gtfs_stops",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "stop_id",                   "type" => "text",    "nullable" => 0 },
+                { "name" => "stop_code",                 "type" => "text",    "nullable" => 1 },
+                { "name" => "stop_name",                 "type" => "text",    "nullable" => 0 },
+                { "name" => "stop_desc",                 "type" => "text",    "nullable" => 1 },
+                { "name" => "stop_lat",                  "type" => "numeric", "nullable" => 0 },
+                { "name" => "stop_lon",                  "type" => "numeric", "nullable" => 0 },
+                { "name" => "zone_id",                   "type" => "text",    "nullable" => 1 },
+                { "name" => "stop_url",                  "type" => "text",    "nullable" => 1 },
+                { "name" => "location_type",             "type" => "integer", "nullable" => 1 },
+                { "name" => "parent_station",            "type" => "text",    "nullable" => 1 },
+                { "name" => "stop_timezone",             "type" => "text",    "nullable" => 1 },
+                { "name" => "wheelchair_boarding",       "type" => "integer", "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_stops_01", "columns" => [ "geo_gtfs_feed_instance_id", "stop_id" ], "unique" => 1 },
+                { "name" => "gtfs_stops_02", "columns" => [ "geo_gtfs_feed_instance_id", "zone_id" ] },
+                { "name" => "gtfs_stops_03", "columns" => [ "geo_gtfs_feed_instance_id", "location_type" ] },
+                { "name" => "gtfs_stops_04", "columns" => [ "geo_gtfs_feed_instance_id", "parent_station" ] },
+                { "name" => "gtfs_stops_05", "columns" => [ "geo_gtfs_feed_instance_id", "wheelchair_boarding" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_routes",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "route_id",                  "type" => "text",                 "nullable" => 0 },
+                { "name" => "agency_id",                 "type" => "text",                 "nullable" => 1, "references" => { "table" => "gtfs_agency", "column" => "id" } },
+                { "name" => "route_short_name",          "type" => "text",                 "nullable" => 0 },
+                { "name" => "route_long_name",           "type" => "text",                 "nullable" => 0 },
+                { "name" => "route_desc",                "type" => "text",                 "nullable" => 1 },
+                { "name" => "route_type",                "type" => "integer",              "nullable" => 0 },
+                { "name" => "route_url",                 "type" => "text",                 "nullable" => 1 },
+                { "name" => "route_color",               "type" => "varchar", "size" => 6, "nullable" => 1 },
+                { "name" => "route_text_color",          "type" => "varchar", "size" => 6, "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_routes_01", "columns" => [ "geo_gtfs_feed_instance_id", "route_id", "agency_id" ], "unique" => 1 },
+                { "name" => "gtfs_routes_02", "columns" => [ "geo_gtfs_feed_instance_id", "agency_id" ] },
+                { "name" => "gtfs_routes_03", "columns" => [ "geo_gtfs_feed_instance_id", "route_id" ] },
+                { "name" => "gtfs_routes_04", "columns" => [ "geo_gtfs_feed_instance_id", "route_type" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_trips",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "route_id",                  "type" => "text",    "nullable" => 0, "references" => { "table" => "gtfs_routes", "column" => "id" } },
+                { "name" => "service_id",                "type" => "text",    "nullable" => 0 },
+                { "name" => "trip_id",                   "type" => "text",    "nullable" => 0 },
+                { "name" => "trip_headsign",             "type" => "text",    "nullable" => 1 },
+                { "name" => "trip_short_name",           "type" => "text",    "nullable" => 1 },
+                { "name" => "direction_id",              "type" => "integer", "nullable" => 1 },
+                { "name" => "block_id",                  "type" => "text",    "nullable" => 1 },
+                { "name" => "shape_id",                  "type" => "text",    "nullable" => 1, "references" => { "table" => "gtfs_shapes", "column" => "id" } },
+                { "name" => "wheelchair_accessible",     "type" => "integer", "nullable" => 1 },
+                { "name" => "bikes_allowed",             "type" => "integer", "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_trips_01", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id" ], "unique" => 1 },
+                { "name" => "gtfs_trips_02", "columns" => [ "geo_gtfs_feed_instance_id", "route_id" ] },
+                { "name" => "gtfs_trips_03", "columns" => [ "geo_gtfs_feed_instance_id", "service_id" ] },
+                { "name" => "gtfs_trips_04", "columns" => [ "geo_gtfs_feed_instance_id", "direction_id" ] },
+                { "name" => "gtfs_trips_05", "columns" => [ "geo_gtfs_feed_instance_id", "block_id" ] },
+                { "name" => "gtfs_trips_06", "columns" => [ "geo_gtfs_feed_instance_id", "shape_id" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_stop_times",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "trip_id",                   "type" => "text",                 "nullable" => 0, "references" => { "table" => "gtfs_trips", "column" => "id" } },
+                { "name" => "arrival_time",              "type" => "varchar", "size" => 8, "nullable" => 0 },
+                { "name" => "departure_time",            "type" => "varchar", "size" => 8, "nullable" => 0 },
+                { "name" => "stop_id",                   "type" => "text",                 "nullable" => 0, "references" => { "table" => "gtfs_stops", "column" => "id" } },
+                { "name" => "stop_sequence",             "type" => "integer",              "nullable" => 0 },
+                { "name" => "stop_headsign",             "type" => "text",                 "nullable" => 1 },
+                { "name" => "pickup_type",               "type" => "integer",              "nullable" => 1 },
+                { "name" => "drop_off_type",             "type" => "integer",              "nullable" => 1 },
+                { "name" => "shape_dist_traveled",       "type" => "numeric",              "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_stop_times_01", "columns" => [ "geo_gtfs_feed_instance_id", "stop_id" ] },
+                { "name" => "gtfs_stop_times_02", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id" ] },
+                { "name" => "gtfs_stop_times_03", "columns" => [ "geo_gtfs_feed_instance_id", "stop_sequence" ] },
+                { "name" => "gtfs_stop_times_01", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id", "stop_id" ], "unique" => 1 },
+            ]
+        },
+        {
+            "name" => "gtfs_calendar",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "service_id",                "type" => "text",                 "nullable" => 0 },
+                { "name" => "monday",                    "type" => "integer",              "nullable" => 0 },
+                { "name" => "tuesday",                   "type" => "integer",              "nullable" => 0 },
+                { "name" => "wednesday",                 "type" => "integer",              "nullable" => 0 },
+                { "name" => "thursday",                  "type" => "integer",              "nullable" => 0 },
+                { "name" => "friday",                    "type" => "integer",              "nullable" => 0 },
+                { "name" => "saturday",                  "type" => "integer",              "nullable" => 0 },
+                { "name" => "sunday",                    "type" => "integer",              "nullable" => 0 },
+                { "name" => "start_date",                "type" => "varchar", "size" => 8, "nullable" => 0 },
+                { "name" => "end_date",                  "type" => "varchar", "size" => 8, "nullable" => 0 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_calendar_01", "columns" => [ "geo_gtfs_feed_instance_id", "service_id" ] },
+                { "name" => "gtfs_calendar_02", "columns" => [ "geo_gtfs_feed_instance_id", "monday" ] },
+                { "name" => "gtfs_calendar_03", "columns" => [ "geo_gtfs_feed_instance_id", "tuesday" ] },
+                { "name" => "gtfs_calendar_04", "columns" => [ "geo_gtfs_feed_instance_id", "wednesday" ] },
+                { "name" => "gtfs_calendar_05", "columns" => [ "geo_gtfs_feed_instance_id", "thursday" ] },
+                { "name" => "gtfs_calendar_06", "columns" => [ "geo_gtfs_feed_instance_id", "friday" ] },
+                { "name" => "gtfs_calendar_07", "columns" => [ "geo_gtfs_feed_instance_id", "saturday" ] },
+                { "name" => "gtfs_calendar_08", "columns" => [ "geo_gtfs_feed_instance_id", "sunday" ] },
+                { "name" => "gtfs_calendar_09", "columns" => [ "geo_gtfs_feed_instance_id", "start_date" ] },
+                { "name" => "gtfs_calendar_10", "columns" => [ "geo_gtfs_feed_instance_id", "end_date" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_calendar_dates",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "service_id",                "type" => "text",                 "nullable" => 0 },
+                { "name" => "date",                      "type" => "varchar", "size" => 8, "nullable" => 0 },
+                { "name" => "exception_type",            "type" => "integer",              "nullable" => 0 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_calendar_dates_01", "columns" => [ "geo_gtfs_feed_instance_id", "service_id" ] },
+                { "name" => "gtfs_calendar_dates_02", "columns" => [ "geo_gtfs_feed_instance_id", "date" ] },
+                { "name" => "gtfs_calendar_dates_03", "columns" => [ "geo_gtfs_feed_instance_id", "exception_type" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_fare_attributes",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "fare_id",                   "type" => "text",    "nullable" => 0 },
+                { "name" => "price",                     "type" => "numeric", "nullable" => 0 },
+                { "name" => "currency_type",             "type" => "text",    "nullable" => 0 },
+                { "name" => "payment_method",            "type" => "integer", "nullable" => 0 },
+                { "name" => "transfers",                 "type" => "integer", "nullable" => 0 },
+                { "name" => "transfer_duration",         "type" => "integer", "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_fare_attributes_01", "columns" => [ "geo_gtfs_feed_instance_id", "fare_id" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_fare_rules",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "fare_id",                   "type" => "text",    "nullable" => 0, "references" => { "table" => "gtfs_fare_attributes", "column" => "fare_id" } },
+                { "name" => "route_id",                  "type" => "text",    "nullable" => 1, "references" => { "table" => "gtfs_routes", "column" => "id" } },
+                { "name" => "origin_id",                 "type" => "text",    "nullable" => 1 },
+                { "name" => "destination_id",            "type" => "text",    "nullable" => 1 },
+                { "name" => "contains_id",               "type" => "text",    "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_fare_rules_01", "columns" => [ "geo_gtfs_feed_instance_id", "fare_id" ] },
+                { "name" => "gtfs_fare_rules_02", "columns" => [ "geo_gtfs_feed_instance_id", "route_id" ] },
+                { "name" => "gtfs_fare_rules_03", "columns" => [ "geo_gtfs_feed_instance_id", "origin_id" ] },
+                { "name" => "gtfs_fare_rules_04", "columns" => [ "geo_gtfs_feed_instance_id", "destination_id" ] },
+                { "name" => "gtfs_fare_rules_05", "columns" => [ "geo_gtfs_feed_instance_id", "contains_id" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_shapes",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "shape_id",                  "type" => "text",    "nullable" => 0 },
+                { "name" => "shape_pt_lat",              "type" => "numeric", "nullable" => 0 },
+                { "name" => "shape_pt_lon",              "type" => "numeric", "nullable" => 0 },
+                { "name" => "shape_pt_sequence",         "type" => "integer", "nullable" => 0 },
+                { "name" => "shape_dist_traveled",       "type" => "numeric", "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_shapes_01", "columns" => [ "geo_gtfs_feed_instance_id", "shape_id" ] },
+                { "name" => "gtfs_shapes_02", "columns" => [ "geo_gtfs_feed_instance_id", "shape_id", "shape_pt_sequence" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_frequencies",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "trip_id",                   "type" => "text",                 "nullable" => 1, "references" => { "table" => "gtfs_trips", "column" => "id" } },
+                { "name" => "start_time",                "type" => "varchar", "size" => 8, "nullable" => 1 },
+                { "name" => "end_time",                  "type" => "varchar", "size" => 8, "nullable" => 1 },
+                { "name" => "headway_secs",              "type" => "integer",              "nullable" => 1 },
+                { "name" => "exact_times",               "type" => "integer",              "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_frequencies_01", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id" ] },
+                { "name" => "gtfs_frequencies_02", "columns" => [ "geo_gtfs_feed_instance_id", "start_time" ] },
+                { "name" => "gtfs_frequencies_03", "columns" => [ "geo_gtfs_feed_instance_id", "end_time" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_transfers",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id",       "type" => "integer",         "nullable" => 0,        "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "from_stop_id",                    "type" => "text",            "nullable" => 0,        "references" => { "table" => "gtfs_stops", "column" => "id" } },
+                { "name" => "to_stop_id",                      "type" => "text",            "nullable" => 0,        "references" => { "table" => "gtfs_stops", "column" => "id" } },
+                { "name" => "transfer_type",                   "type" => "integer",         "nullable" => 0 },
+                { "name" => "min_transfer_time",               "type" => "integer",         "nullable" => 1 },
+            ],
+            "indexes" => [
+                { "name" => "gtfs_transfers_01", "columns" => [ "geo_gtfs_feed_instance_id", "from_stop_id" ] },
+                { "name" => "gtfs_transfers_02", "columns" => [ "geo_gtfs_feed_instance_id", "to_stop_id" ] },
+            ]
+        },
+        {
+            "name" => "gtfs_feed_info",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "feed_publisher_name",       "type" => "text",                 "nullable" => 0 },
+                { "name" => "feed_publisher_url",        "type" => "text",                 "nullable" => 0 },
+                { "name" => "feed_lang",                 "type" => "text",                 "nullable" => 0 },
+                { "name" => "feed_start_date",           "type" => "varchar", "size" => 8, "nullable" => 1 },
+                { "name" => "feed_end_date",             "type" => "varchar", "size" => 8, "nullable" => 1 },
+                { "name" => "feed_version",              "type" => "text",                 "nullable" => 1 },
+            ]
+        },
+    ];
+    $INDEXES = [
+        { "name" => "geo_gtfs_agency_00",          "table" => "gtfs_agency",          "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_stops_00",           "table" => "gtfs_stops",           "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_routes_00",          "table" => "gtfs_routes",          "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_trips_00",           "table" => "gtfs_trips",           "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_stop_times_00",      "table" => "gtfs_stop_times",      "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_calendar_00",        "table" => "gtfs_calendar",        "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_calendar_dates_00",  "table" => "gtfs_calendar_dates",  "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_fare_attributes_00", "table" => "gtfs_fare_attributes", "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_fare_rules_00",      "table" => "gtfs_fare_rules",      "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_shapes_00",          "table" => "gtfs_shapes",          "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_frequencies_00",     "table" => "gtfs_frequencies",     "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_transfers_00",       "table" => "gtfs_transfers",       "columns" => [ "geo_gtfs_feed_instance_id" ] },
+        { "name" => "geo_gtfs_feed_info_00",       "table" => "gtfs_feed_info",       "columns" => [ "geo_gtfs_feed_instance_id" ] },
+    ];
+}
+
 sub new {
     my ($class, %args) = @_;
     my $self = fields::new($class);
@@ -135,287 +484,14 @@ sub drop_tables {
     my $dbh = $self->dbh;
     print STDERR ("Dropping database tables...\n");
     $self->execute_multiple_sql_queries(<<"END");
-drop table if exists geo_gtfs;
-drop table if exists geo_gtfs_agency;
-drop table if exists geo_gtfs_feed;
-drop table if exists geo_gtfs_feed_instance;
-drop table if exists geo_gtfs_realtime_feed;
-drop table if exists geo_gtfs_realtime_feed_instance;
-drop table if exists gtfs_agency;
-drop table if exists gtfs_stops;
-drop table if exists gtfs_routes;
-drop table if exists gtfs_trips;
-drop table if exists gtfs_stop_times;
-drop table if exists gtfs_calendar;
-drop table if exists gtfs_calendar_dates;
-drop table if exists gtfs_fare_attributes;
-drop table if exists gtfs_fare_rules;
-drop table if exists gtfs_shapes;
-drop table if exists gtfs_frequencies;
-drop table if exists gtfs_transfers;
-drop table if exists gtfs_feed_info;
 END
 }
 
 sub create_tables {
     my ($self) = @_;
     my $dbh = $self->dbh;
-
+    print STDERR ("Creating database tables...\n");
     my $sql = <<"END";
-create table if not exists geo_gtfs (
-                                                        name                            varchar(32)     not null        primary key,
-                                                        value                           text            null
-);
-delete from geo_gtfs where name = 'geo_gtfs.db.version';
-insert into geo_gtfs (name, value) values('geo_gtfs.db.version', '0.1');
-
-create table if not exists geo_gtfs_agency (
-                                                        id                              integer                         primary key autoincrement,
-                                                        name                            varchar(64)     not null        -- preferably the transit agency's domain name, without a www. prefix. - examples: 'ridetarc.org', 'ttc.ca'
-);
-create index if not exists geo_gtfs_agency_01 on geo_gtfs_agency(name);
-
-create table if not exists geo_gtfs_feed (
-                                                        id                              integer                         primary key autoincrement,
-                                                        geo_gtfs_agency_id              integer         not null        references geo_gtfs_agency(id),
-                                                        url                             text            not null,
-                                                        is_active                       integer         not null        default 1       -- updated when feeds added, removed, I guess.
-);
-create index if not exists geo_gtfs_feed_01 on geo_gtfs_feed(is_active);
-
-create table if not exists geo_gtfs_feed_instance (
-                                                        id                              integer                         primary key autoincrement,
-                                                        geo_gtfs_feed_id                integer         not null        references geo_gtfs_feed(id),
-                                                        filename                        text            not null,
-                                                        retrieved                       integer         not null,
-                                                        last_modified                   integer         null,           -- SHOULD be specified, but some servers omit.
-                                                        is_latest                       integer         not null        default 1
-);
-create index if not exists geo_gtfs_feed_instance_01 on geo_gtfs_feed_instance(is_latest);
-
-create table if not exists geo_gtfs_realtime_feed (
-                                                        id                              integer                         primary key,
-                                                        geo_gtfs_agency_id              integer         not null        references geo_gtfs_agency(id),
-                                                        url                             text            not null,
-                                                        feed_type                       varchar(16)     not null,       -- 'updates', 'positions', 'alerts', 'all'
-                                                        is_active                       integer         not null        default 1       -- updated when feeds added, removed
-);
-create index if not exists geo_gtfs_realtime_feed_01 on geo_gtfs_realtime_feed(feed_type);
-create index if not exists geo_gtfs_realtime_feed_02 on geo_gtfs_realtime_feed(is_active);
-
-create table if not exists geo_gtfs_realtime_feed_instance (
-                                                        id                              integer                         primary key,
-                                                        geo_gtfs_realtime_feed_id       integer         not null        references geo_gtfs_realtime_feed(id),
-                                                        filename                        text            not null,
-                                                        retrieved                       integer         not null,
-                                                        last_modified                   integer         null,
-                                                        header_timestamp                integer         null,
-                                                        is_latest                       integer         not null        default 1
-);
-create index if not exists geo_gtfs_realtime_feed_instance_01 on geo_gtfs_realtime_feed_instance(is_latest);
--------------------------------------------------------------------------------
-create table if not exists gtfs_agency (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        agency_id                       text            null,           -- indexed -- for feeds containing only one agency, this can be NULL.
-                                                        agency_name                     text            not null,
-                                                        agency_url                      text            not null,
-                                                        agency_timezone                 text            not null,
-                                                        agency_lang                     varchar(2)      null,
-                                                        agency_phone                    text            null,
-                                                        agency_fare_url                 text            null
-);
-create unique index if not exists gtfs_agency_01 on gtfs_agency(geo_gtfs_feed_instance_id, agency_id);
-
-create table if not exists gtfs_stops (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        stop_id                         text            not null,       -- indexed --
-                                                        stop_code                       text            null,
-                                                        stop_name                       text            not null,
-                                                        stop_desc                       text            null,
-                                                        stop_lat                        numeric         not null,
-                                                        stop_lon                        numeric         not null,
-                                                        zone_id                         text            null,           -- indexed --
-                                                        stop_url                        text            null,
-                                                        location_type                   integer         null,
-                                                        parent_station                  text            null,
-                                                        stop_timezone                   text            null,
-                                                        wheelchair_boarding             integer         null
-);
-create unique index if not exists gtfs_stops_01 on gtfs_stops(geo_gtfs_feed_instance_id, stop_id);
-create        index if not exists gtfs_stops_02 on gtfs_stops(geo_gtfs_feed_instance_id, zone_id);
-create        index if not exists gtfs_stops_03 on gtfs_stops(geo_gtfs_feed_instance_id, location_type);
-create        index if not exists gtfs_stops_04 on gtfs_stops(geo_gtfs_feed_instance_id, parent_station);
-create        index if not exists gtfs_stops_05 on gtfs_stops(geo_gtfs_feed_instance_id, wheelchair_boarding);
-
-create table if not exists gtfs_routes (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        route_id                        text            not null,       -- indexed --
-                                                        agency_id                       text            null            references gtfs_agency(id),
-                                                        route_short_name                text            not null,
-                                                        route_long_name                 text            not null,
-                                                        route_desc                      text            null,
-                                                        route_type                      integer         not null,
-                                                        route_url                       text            null,
-                                                        route_color                     varchar(6)      null,
-                                                        route_text_color                varchar(6)      null
-);
-create unique index if not exists gtfs_routes_01 on gtfs_routes (geo_gtfs_feed_instance_id, route_id, agency_id);
-create        index if not exists gtfs_routes_02 on gtfs_routes (geo_gtfs_feed_instance_id, agency_id);
-create        index if not exists gtfs_routes_03 on gtfs_routes (geo_gtfs_feed_instance_id, route_id);
-create        index if not exists gtfs_routes_04 on gtfs_routes (geo_gtfs_feed_instance_id, route_type);
-
-create table if not exists gtfs_trips (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        route_id                        text            not null        references gtfs_routes(id),
-                                                        service_id                      text            not null,       -- indexed --
-                                                        trip_id                         text            not null,       -- indexed --
-                                                        trip_headsign                   text            null,
-                                                        trip_short_name                 text            null,
-                                                        direction_id                    integer         null,           -- indexed --
-                                                        block_id                        text            null,           -- indexed --
-                                                        shape_id                        text            null            references gtfs_shapes(id),
-                                                        wheelchair_accessible           integer         null,
-                                                        bikes_allowed                   integer         null
-);
-create unique index if not exists gtfs_trips_01 on gtfs_trips (geo_gtfs_feed_instance_id, trip_id);
-create        index if not exists gtfs_trips_02 on gtfs_trips (geo_gtfs_feed_instance_id, route_id);
-create        index if not exists gtfs_trips_03 on gtfs_trips (geo_gtfs_feed_instance_id, service_id);
-create        index if not exists gtfs_trips_04 on gtfs_trips (geo_gtfs_feed_instance_id, direction_id);
-create        index if not exists gtfs_trips_05 on gtfs_trips (geo_gtfs_feed_instance_id, block_id);
-create        index if not exists gtfs_trips_06 on gtfs_trips (geo_gtfs_feed_instance_id, shape_id);
-
-create table if not exists gtfs_stop_times (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        trip_id                         text            not null        references gtfs_trips(id),
-                                                        arrival_time                    varchar(8)      not null,
-                                                        departure_time                  varchar(8)      not null,
-                                                        stop_id                         text            not null        references gtfs_stops(id),
-                                                        stop_sequence                   integer         not null,
-                                                        stop_headsign                   text            null,
-                                                        pickup_type                     integer         null,
-                                                        drop_off_type                   integer         null,
-                                                        shape_dist_traveled             numeric         null
-);
-create        index if not exists gtfs_stop_times_01 on gtfs_stop_times (geo_gtfs_feed_instance_id, stop_id);
-create        index if not exists gtfs_stop_times_02 on gtfs_stop_times (geo_gtfs_feed_instance_id, trip_id);
-create        index if not exists gtfs_stop_times_03 on gtfs_stop_times (geo_gtfs_feed_instance_id, stop_sequence);
-create unique index if not exists gtfs_stop_times_01 on gtfs_stop_times (geo_gtfs_feed_instance_id, trip_id, stop_id);
-
-create table if not exists gtfs_calendar (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        service_id                      text            not null,       -- indexed --
-                                                        monday                          integer         not null,
-                                                        tuesday                         integer         not null,
-                                                        wednesday                       integer         not null,
-                                                        thursday                        integer         not null,
-                                                        friday                          integer         not null,
-                                                        saturday                        integer         not null,
-                                                        sunday                          integer         not null,
-                                                        start_date                      varchar(8)      not null,
-                                                        end_date                        varchar(8)      not null
-);
-create        index if not exists gtfs_calendar_01 on gtfs_calendar(geo_gtfs_feed_instance_id, service_id);
-create        index if not exists gtfs_calendar_02 on gtfs_calendar(geo_gtfs_feed_instance_id, monday);
-create        index if not exists gtfs_calendar_03 on gtfs_calendar(geo_gtfs_feed_instance_id, tuesday);
-create        index if not exists gtfs_calendar_04 on gtfs_calendar(geo_gtfs_feed_instance_id, wednesday);
-create        index if not exists gtfs_calendar_05 on gtfs_calendar(geo_gtfs_feed_instance_id, thursday);
-create        index if not exists gtfs_calendar_06 on gtfs_calendar(geo_gtfs_feed_instance_id, friday);
-create        index if not exists gtfs_calendar_07 on gtfs_calendar(geo_gtfs_feed_instance_id, saturday);
-create        index if not exists gtfs_calendar_08 on gtfs_calendar(geo_gtfs_feed_instance_id, sunday);
-create        index if not exists gtfs_calendar_09 on gtfs_calendar(geo_gtfs_feed_instance_id, start_date);
-create        index if not exists gtfs_calendar_10 on gtfs_calendar(geo_gtfs_feed_instance_id, end_date);
-
-create table if not exists gtfs_calendar_dates (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        service_id                      text            not null,       -- indexed --
-                                                        `date`                          varchar(8)      not null,
-                                                        exception_type                  integer         not null
-);
-create        index if not exists gtfs_calendar_dates_01 on gtfs_calendar_dates(geo_gtfs_feed_instance_id, service_id);
-create        index if not exists gtfs_calendar_dates_02 on gtfs_calendar_dates(geo_gtfs_feed_instance_id, `date`);
-create        index if not exists gtfs_calendar_dates_03 on gtfs_calendar_dates(geo_gtfs_feed_instance_id, exception_type);
-
-create table if not exists gtfs_fare_attributes (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        fare_id                         text            not null,       -- indexed --
-                                                        price                           numeric         not null,
-                                                        currency_type                   text            not null,
-                                                        payment_method                  integer         not null,
-                                                        transfers                       integer         not null,
-                                                        transfer_duration               integer         null
-);
-create        index if not exists gtfs_fare_attributes_01 on gtfs_fare_attributes(geo_gtfs_feed_instance_id, fare_id);
-
-create table if not exists gtfs_fare_rules (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        fare_id                         text            not null        references gtfs_fare_attributes(fare_id),
-                                                        route_id                        text            null            references gtfs_routes(id),
-                                                        origin_id                       text            null,           -- indexed --
-                                                        destination_id                  text            null,           -- indexed --
-                                                        contains_id                     text            null            -- indexed --
-);
-create        index if not exists gtfs_fare_rules_01 on gtfs_fare_rules(geo_gtfs_feed_instance_id, fare_id);
-create        index if not exists gtfs_fare_rules_02 on gtfs_fare_rules(geo_gtfs_feed_instance_id, route_id);
-create        index if not exists gtfs_fare_rules_03 on gtfs_fare_rules(geo_gtfs_feed_instance_id, origin_id);
-create        index if not exists gtfs_fare_rules_04 on gtfs_fare_rules(geo_gtfs_feed_instance_id, destination_id);
-create        index if not exists gtfs_fare_rules_05 on gtfs_fare_rules(geo_gtfs_feed_instance_id, contains_id);
-
-create table if not exists gtfs_shapes (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        shape_id                        text            not null,       -- indexed --
-                                                        shape_pt_lat                    numeric         not null,
-                                                        shape_pt_lon                    numeric         not null,
-                                                        shape_pt_sequence               integer         not null,       -- indexed --
-                                                        shape_dist_traveled             numeric         null
-);
-create        index if not exists gtfs_shapes_01 on gtfs_shapes(geo_gtfs_feed_instance_id, shape_id);
-create        index if not exists gtfs_shapes_02 on gtfs_shapes(geo_gtfs_feed_instance_id, shape_id, shape_pt_sequence);
-
-create table if not exists gtfs_frequencies (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        trip_id                         text            null            references gtfs_trips(id),
-                                                        start_time                      varchar(8)      null, --indexed
-                                                        end_time                        varchar(8)      null, --indexed
-                                                        headway_secs                    integer         null,
-                                                        exact_times                     integer         null
-);
-create        index if not exists gtfs_frequencies_01 on gtfs_frequencies(geo_gtfs_feed_instance_id, trip_id);
-create        index if not exists gtfs_frequencies_02 on gtfs_frequencies(geo_gtfs_feed_instance_id, start_time);
-create        index if not exists gtfs_frequencies_03 on gtfs_frequencies(geo_gtfs_feed_instance_id, end_time);
-
-create table if not exists gtfs_transfers (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        from_stop_id                    text            not null        references gtfs_stops(id),
-                                                        to_stop_id                      text            not null        references gtfs_stops(id),
-                                                        transfer_type                   integer         not null,
-                                                        min_transfer_time               integer         null
-);
-create        index if not exists gtfs_transfers_01 on gtfs_transfers(from_stop_id);
-create        index if not exists gtfs_transfers_02 on gtfs_transfers(to_stop_id);
-
-create table if not exists gtfs_feed_info (
-                                                        geo_gtfs_feed_instance_id       integer         not null        references geo_gtfs_feed(id),
-                                                        feed_publisher_name             text            not null,
-                                                        feed_publisher_url              text            not null,
-                                                        feed_lang                       text            not null,
-                                                        feed_start_date                 varchar(8)      null,
-                                                        feed_end_date                   varchar(8)      null,
-                                                        feed_version                    text            null
-);
-
-create index if not exists geo_gtfs_agency_00                   on gtfs_agency          (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_stops_00                    on gtfs_stops           (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_routes_00                   on gtfs_routes          (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_trips_00                    on gtfs_trips           (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_stop_times_00               on gtfs_stop_times      (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_calendar_00                 on gtfs_calendar        (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_calendar_dates_00           on gtfs_calendar_dates  (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_fare_attributes_00          on gtfs_fare_attributes (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_fare_rules_00               on gtfs_fare_rules      (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_shapes_00                   on gtfs_shapes          (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_frequencies_00              on gtfs_frequencies     (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_transfers_00                on gtfs_transfers       (geo_gtfs_feed_instance_id);
-create index if not exists geo_gtfs_feed_info_00                on gtfs_feed_info       (geo_gtfs_feed_instance_id);
 END
     $self->execute_multiple_sql_queries($sql);
 }
@@ -879,6 +955,132 @@ sub select_or_insert_geo_gtfs_agency_id {
 				      "key_fields" => { "name" => $geo_gtfs_agency_name });
 }
 
+sub sql_to_drop_tables {
+    my ($self) = @_;
+    my @result;
+    foreach my $table (@{$TABLES}) {
+        push(@result, $self->sql_to_drop_table($table));
+    }
+    return @result if wantarray;
+    return \@result;
+}
+
+sub sql_to_create_tables {
+    my ($self) = @_;
+    my @result;
+    foreach my $table (@{$TABLES}) {
+        push(@result, $self->sql_to_create_table($table));
+    }
+    push(@result, $self->sql_to_create_indexes);
+    return @result if wantarray;
+    return \@result;
+}
+
+sub sql_to_drop_table {
+    my ($self, $table) = @_;
+    my $sql = sprintf("drop table if exists %s;\n",
+                      $self->quote_table_name($table->{name}));
+    return $sql;
+}
+
+sub sql_to_create_table {
+    my ($self, $table) = @_;
+    my @result;
+
+    my $sql;
+    $sql = sprintf("create table if not exists %s(\n",
+                   $self->quote_table_name($table->{name}));
+    my @spec = map { $self->sql_to_specify_table_column($_) }
+        @{$table->{columns}};
+    if (scalar @spec) {
+        $sql .= "    " . join(",\n    ", @spec);
+        $sql .= "\n";
+    }
+    $sql .= ");\n";
+    push(@result, $sql);
+
+    if (defined $table->{indexes}) {
+        my @indexes = @{$table->{indexes}};
+        foreach my $index (@indexes) {
+            my %index = %$index;
+            $index{table} = $table->{name};
+            push(@result, $self->sql_to_create_index(\%index));
+        }
+    }
+
+    return @result if wantarray;
+    return \@result;
+}
+
+sub sql_to_specify_table_column {
+    my ($self, $column) = @_;
+    my $spec = sprintf("%s", $self->quote_column_name($column->{name}));
+    $spec .= sprintf(" %s", $column->{type});
+    $spec .= sprintf("(%d)", $column->{size}) if defined $column->{size};
+    if (defined $column->{nullable} and not $column->{primary_key}) { # primary_key implies not null
+        if ($column->{nullable}) {
+            $spec .= " null";
+        } else {
+            $spec .= " not null";
+        }
+    }
+    $spec .= " primary key" if $column->{primary_key};
+    $spec .= " autoincrement" if $column->{auto_increment};
+    $spec .= sprintf(" references %s(%s)",
+                     $self->quote_table_name($column->{references}->{table}),
+                     $self->quote_column_name($column->{references}->{column}))
+        if defined $column->{references};
+    if (defined $column->{default}) {
+        if ($column->{type} eq "integer" || $column->{type} eq "numeric") {
+            $spec .= sprintf(" default %d", $column->{default});
+        } elsif ($column->{type} eq "varchar" || $column->{type} eq "text") {
+            $spec .= sprintf(" default %s", $self->dbh->quote($column->{default}));
+        }
+    }
+    return $spec;
+}
+
+sub sql_to_create_indexes {
+    my ($self) = @_;
+    my @result;
+    foreach my $index (@{$INDEXES}) {
+        push(@result, $self->sql_to_create_index($index));
+    }
+    return @result if wantarray;
+    return \@result;
+}
+
+sub sql_to_create_index {
+    my ($self, $index) = @_;
+    my $sql = "create";
+    $sql .= " unique" if $index->{unique};
+    $sql .= " index";
+    $sql .= " if not exists";
+    my $name = $index->{name} // sprintf("%s__idx__%s",
+                                         $index->{table},
+                                         join("__", @{$index->{columns}}));
+    $sql .= sprintf(" %s", $self->quote_index_name($name));
+    $sql .= sprintf(" on %s(%s);\n",
+                    $self->quote_table_name($index->{table}),
+                    join(", ", map { $self->quote_column_name($_) } @{$index->{columns}}));
+    return $sql;
+}
+
+sub quote_table_name {
+    my ($self, $table_name) = @_;
+    return $self->dbh->quote_identifier($table_name);
+}
+
+sub quote_column_name {
+    my ($self, $column_name) = @_;
+    return $self->dbh->quote_identifier($column_name);
+}
+
+sub quote_index_name {
+    my ($self, $index_name) = @_;
+    return $self->dbh->quote_identifier($index_name);
+}
+
 ###############################################################################
 # MISC.
 ###############################################################################
@@ -936,6 +1138,6 @@ Each statement must be terminated by a semicolon followed by a newline.
 
 
 
-=cut
+p=cut
 
 1;

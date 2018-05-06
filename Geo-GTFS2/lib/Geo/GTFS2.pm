@@ -357,6 +357,16 @@ sub realtime {
 # DB WRAPPER
 ###############################################################################
 
+sub sql_to_create_tables {
+    my ($self) = @_;
+    return $self->db->sql_to_create_tables;
+}
+
+sub sql_to_drop_tables {
+    my ($self) = @_;
+    return $self->db->sql_to_drop_tables;
+}
+
 use Geo::GTFS2::DB;
 
 sub dbh {
