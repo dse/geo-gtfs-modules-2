@@ -50,7 +50,7 @@ BEGIN {
                 { "name" => "geo_gtfs_agency_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_agency", "column" => "id" } },
                 { "name" => "url",                "type" => "text",    "nullable" => 0 },
 
-                # updated when feeds added, removed, I guess.
+                # *should* be updated when feed instances are added or removed.
                 { "name" => "is_active",          "type" => "integer", "nullable" => 0, "default" => 1 },
             ],
             "indexes" => [
@@ -511,13 +511,6 @@ sub dbh {
     }
 
     $CONNECTIONS->{$$} = {};
-<<<<<<< HEAD
-    warn(sprintf("Connecting to %s ...\n", $dbfile)) if $self->{verbose} || -t 2;
-    my $dbh = DBI->connect("dbi:SQLite:$dbfile", "", "",
-                           { RaiseError => 1, AutoCommit => 0 });
-    warn(sprintf("... connected!\n")) if $self->{verbose} || -t 2;
-    $dbh->sqlite_busy_timeout(5000);
-=======
     my ($dsn, $username, $password) = $self->get_credentials();
     warn(sprintf("Connecting to %s ...\n", $dsn)) if $self->{verbose} || -t 2;
     my $dbh = DBI->connect($dsn, $username, $password, { RaiseError => 1, AutoCommit => 0 });
@@ -532,14 +525,15 @@ sub dbh {
         $dbh->sqlite_busy_timeout(5000);
     }
 
->>>>>>> enhancements; fixes
     $CONNECTIONS->{$$}->{dbh} = $dbh;
+
     if (!$self->{no_auto_update}) {
         if (!$CONNECTIONS->{$$}->{tables_created}) {
-            $self->create_tables();
+            $self->update_tables();
             $CONNECTIONS->{$$}->{tables_created} = 1;
         }
     }
+
     return $dbh;
 }
 
@@ -1112,6 +1106,81 @@ sub get_service_id_by_date {
     }
 }
 
+sub delete_feed_instance {
+    my ($self, $feed_instance_id) = @_;
+    $self->delete_feed_instance_data($feed_instance_id, 1);
+}
+
+sub delete_feed_instance_data {
+    my ($self, $feed_instance_id, $delete_instance_row) = @_;
+
+    my @tables = @{$TABLES};
+    @tables = grep {
+        $self->table_has_column($_, "geo_gtfs_feed_instance_id")
+    } @tables;
+
+    my @sql = map {
+        sprintf("delete from %s where geo_gtfs_feed_instance_id = ?;\n",
+                $self->quote_table_name($_->{name}))
+    } @tables;
+
+    if ($delete_instance_row) {
+        push(@sql, "delete from geo_gtfs_feed_instance where id = ?;\n");
+    }
+
+    foreach my $sql (@sql) {
+        warn($sql) if $self->{verbose} || -t 2;
+        my $sth = $self->dbh->prepare($sql);
+        $sth->execute($feed_instance_id);
+    }
+
+    warn("Committing...\n") if $self->{verbose} || -t 2;
+    $self->dbh->commit();
+    warn("...done!\n") if $self->{verbose} || -t 2;
+}
+
+sub delete_all_data {
+    my ($self) = @_;
+    my @tables = @{$TABLES};
+    my @sql = map {
+        sprintf("delete from %s;\n", $self->quote_table_name($_->{name}))
+    } @tables;
+
+    foreach my $sql (@sql) {
+        warn($sql) if $self->{verbose} || -t 2;
+        my $sth = $self->dbh->prepare($sql);
+        $sth->execute();
+    }
+
+    warn("Committing...\n") if $self->{verbose} || -t 2;
+    $self->dbh->commit();
+    warn("...done!\n") if $self->{verbose} || -t 2;
+}
+
+sub table_has_column {
+    my ($self, $table, $column_name) = @_;
+    my @columns = grep { $_->{name} eq $column_name } @{$table->{columns}};
+    return (scalar @columns) ? 1 : 0;
+}
+
+sub find_non_uniqueness {
+    my ($self) = @_;
+    my $sql = <<"END";
+        select distinct geo_gtfs_feed_instance_id from (
+            select distinct geo_gtfs_feed_instance_id, trip_id, stop_id,
+                   count(*) as count
+            from gtfs_stop_times
+            group by geo_gtfs_feed_instance_id, trip_id, stop_id
+            having count > 1
+        );
+END
+    my $sth = $self->dbh->prepare($sql);
+    $sth->execute();
+    while (my $row = $sth->fetchrow_hashref) {
+        print(Dumper($row));
+    }
+}
+
 ###############################################################################
 # AGENCIES
 ###############################################################################
@@ -1153,7 +1222,7 @@ sub sql_to_update_tables {
     }
     foreach my $index (@{$INDEXES}) {
         if (!$self->get_index_info(undef, $index, 1)) {
-            push(@result, $self->sql_to_create_index($index));
+            push(@result, $self->sql_to_create_index(undef, $index));
         }
     }
     return @result if wantarray;
@@ -1174,7 +1243,7 @@ sub sql_to_alter_table {
     foreach my $index (@{$table->{indexes}}) {
         my $sth = $self->dbh->statistics_info(undef, undef, $table->{name}, 0, 0);
         if (!$self->get_index_info($table, $index, 1)) {
-            push(@result, $self->sql_to_create_index($index));
+            push(@result, $self->sql_to_create_index($table, $index));
         }
     }
     return @result if wantarray;
@@ -1199,7 +1268,7 @@ sub get_index_info {
 sub sql_to_alter_table_add_column {
     my ($self, $table, $column) = @_;
     my $sql = sprintf("alter table %s add column %s;\n",
-                      $self->dbh->quote_identifier($table->{name}),
+                      $self->quote_table_name($table->{name}),
                       $self->sql_to_specify_table_column($column));
     return $sql;
 }
@@ -1259,9 +1328,7 @@ sub sql_to_create_table {
                 }
             } else {
                 if (!$self->index_exists($table->{name}, $index->{name})) {
-                    my %index = %$index;
-                    $index{table} = $table->{name};
-                    push(@result, $self->sql_to_create_index(\%index));
+                    push(@result, $self->sql_to_create_index($table, $index));
                 }
             }
         }
@@ -1315,7 +1382,7 @@ sub sql_to_create_indexes {
     my @result;
     foreach my $index (@{$INDEXES}) {
         if (!$self->index_exists($index->{table}, $index->{name})) {
-            push(@result, $self->sql_to_create_index($index));
+            push(@result, $self->sql_to_create_index($index->{table}, $index));
         }
     }
     return @result if wantarray;
@@ -1323,7 +1390,7 @@ sub sql_to_create_indexes {
 }
 
 sub sql_to_create_index {
-    my ($self, $index) = @_;
+    my ($self, $table, $index) = @_;
     my $driver_name = $self->driver_name;
     my $sql = "create";
     $sql .= " unique" if $index->{unique};
@@ -1331,12 +1398,28 @@ sub sql_to_create_index {
     if ($driver_name ne "Pg") {
         $sql .= " if not exists";
     }
-    my $name = $index->{name} // sprintf("%s__idx__%s",
-                                         $index->{table},
-                                         join("__", @{$index->{columns}}));
-    $sql .= sprintf(" %s", $self->quote_index_name($name));
+
+    my $table_name;
+    if (defined $index->{table}) {
+        $table_name = $index->{table};
+    } else {
+        if (defined $table) {
+            if (ref $table) {
+                $table_name = $table->{name};
+            } else {
+                $table_name = $table;
+            }
+        } else {
+            die("sql_to_create_index: can't find a table name");
+        }
+    }
+
+    my $index_name = $index->{name} // sprintf("%s__idx__%s",
+                                               $table_name,
+                                               join("__", @{$index->{columns}}));
+    $sql .= sprintf(" %s", $self->quote_index_name($index_name));
     $sql .= sprintf(" on %s(%s);\n",
-                    $self->quote_table_name($index->{table}),
+                    $self->quote_table_name($table_name),
                     join(", ", map { $self->quote_column_name($_) } @{$index->{columns}}));
     return $sql;
 }
