@@ -5,6 +5,7 @@ use warnings;
 use base "Geo::GTFS2::Object";
 
 use Geo::GTFS2::Realtime;
+use Geo::GTFS2::Util::Progress;
 
 use DBI;
 use Data::Dumper;
@@ -208,13 +209,10 @@ sub process_gtfs_feed {
 	my $basename = basename($filename, ".txt");
 	my $table_name = "gtfs_$basename";
 
-	$sth = $self->dbh->table_info(undef, "%", $table_name, "TABLE");
-	$sth->execute();
-	my $row = $sth->fetchrow_hashref();
-	if (!$row) {
-	    warn("No such table: $table_name\n");
-	    next;
-	}
+        if (!$self->db->table_exists($table_name)) {
+            warn("No such table: $table_name\n");
+            next;
+        }
 
 	my $fh = Archive::Zip::MemberRead->new($zip, $filename);
 
@@ -222,32 +220,46 @@ sub process_gtfs_feed {
 	my $line = $fh->getline();
 	$line =~ s{[\r\n]+$}{};
 	$csv->parse($line);
-	my $fields = [$csv->fields()];
-	die("no fields in member $filename of $zip_filename\n")
-            unless $fields or scalar(@$fields);
+	my @fields = $csv->fields();
+        my @field_info = map { $self->db->table_field_info($table_name, $_) } @fields;
+
+        if (!scalar @fields) {
+            warn("no fields in member $filename of $zip_filename\n");
+            next;
+        }
 
 	$self->dbh->do("delete from $table_name where geo_gtfs_feed_instance_id = ?",
 		       {}, $geo_gtfs_feed_instance_id);
 
 	my $sql = sprintf("insert into $table_name(geo_gtfs_feed_instance_id, %s) values(?, %s);",
-			  join(", ", @$fields),
-			  join(", ", ("?") x scalar(@$fields)));
+			  join(", ", @fields),
+			  join(", ", ("?") x (scalar @fields)));
 	$sth = $self->dbh->prepare($sql);
 
-	print STDERR ("Populating $table_name ... ");
+	print STDERR ("Populating $table_name ...\n");
+
+        my $progress = Geo::GTFS2::Util::Progress->new(
+            progress_message => "  %d rows",
+            completion_message => "  Done.  Inserted %d rows."
+        );
 
 	my $rows = 0;
 	while (defined(my $line = $fh->getline())) {
-	    $line =~ s{[\r\n]+$}{};
+	    $line =~ s{\R\z}{}; # safer chomp
+            next unless $line =~ m{\S}; # line must contain non-whitespace
 	    $csv->parse($line);
-	    my $data = [$csv->fields()];
-	    if (scalar(@$data) < scalar(@$fields)) {
-		next;
-	    }
-	    $sth->execute($geo_gtfs_feed_instance_id, @$data);
-	    $rows += 1;
+	    my @data = $csv->fields();
+            for (my $i = 0; $i < scalar @fields; $i += 1) {
+                if ($data[$i] eq "" &&
+                        ($field_info[$i]{type} eq "numeric" || $field_info[$i]{type} eq "integer") &&
+                        $field_info[$i]{nullable}) {
+                    $data[$i] = undef;
+                }
+            }
+            $sth->execute($geo_gtfs_feed_instance_id, @data);
+            $progress->tick();
 	}
-	print STDERR ("$rows rows inserted.\n");
+        $progress->done();
     }
     $self->dbh->commit();
 
