@@ -1,6 +1,7 @@
 package Geo::GTFS2::DB;
 use warnings;
 use strict;
+use v5.10.0;
 
 use DBI;
 use File::Basename qw(dirname basename);
@@ -8,6 +9,7 @@ use File::Path qw(make_path);
 use HTTP::Date qw(str2time);
 use POSIX qw(strftime floor);
 use Data::Dumper;
+use YAML::Any qw(LoadFile);
 
 use fields qw(dir
 	      sqlite_filename
@@ -121,6 +123,7 @@ BEGIN {
                 { "name" => "agency_fare_url",           "type" => "text",                 "nullable" => 1 },
                 { "name" => "agency_email",              "type" => "text",                 "nullable" => 1 }, # new in 2018
             ],
+            "primary_key" => ["geo_gtfs_feed_instance_id", "agency_id"],
             "indexes" => [
                 { "name" => "gtfs_agency_01", "columns" => [ "geo_gtfs_feed_instance_id", "agency_id" ], "unique" => 1 },
             ]
@@ -143,6 +146,7 @@ BEGIN {
                 { "name" => "stop_timezone",             "type" => "text",    "nullable" => 1 },
                 { "name" => "wheelchair_boarding",       "type" => "integer", "nullable" => 1 },
             ],
+            "primary_key" => ["geo_gtfs_feed_instance_id", "stop_id"],
             "indexes" => [
                 { "name" => "gtfs_stops_01", "columns" => [ "geo_gtfs_feed_instance_id", "stop_id" ], "unique" => 1 },
                 { "name" => "gtfs_stops_02", "columns" => [ "geo_gtfs_feed_instance_id", "zone_id" ] },
@@ -157,7 +161,7 @@ BEGIN {
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
                 { "name" => "route_id",                  "type" => "text",                 "nullable" => 0 },
-                { "name" => "agency_id",                 "type" => "text",                 "nullable" => 1, "references" => { "table" => "gtfs_agency", "column" => "id" } },
+                { "name" => "agency_id",                 "type" => "text",                 "nullable" => 1 },
                 { "name" => "route_short_name",          "type" => "text",                 "nullable" => 0 },
                 { "name" => "route_long_name",           "type" => "text",                 "nullable" => 0 },
                 { "name" => "route_desc",                "type" => "text",                 "nullable" => 1 },
@@ -166,6 +170,16 @@ BEGIN {
                 { "name" => "route_color",               "type" => "varchar", "size" => 6, "nullable" => 1 },
                 { "name" => "route_text_color",          "type" => "varchar", "size" => 6, "nullable" => 1 },
                 { "name" => "route_sort_order",          "type" => "integer",              "nullable" => 1 }, # new for 2018
+            ],
+            "primary_key" => ["geo_gtfs_feed_instance_id", "route_id"],
+            "foreign_key" => [
+                {
+                    columns    => ["geo_gtfs_feed_instance_id", "agency_id"],
+                    references => {
+                        "table" => "gtfs_agency",
+                        "columns" => ["geo_gtfs_feed_instance_id", "agency_id"]
+                    }
+                }
             ],
             "indexes" => [
                 { "name" => "gtfs_routes_01", "columns" => [ "geo_gtfs_feed_instance_id", "route_id", "agency_id" ], "unique" => 1 },
@@ -176,20 +190,53 @@ BEGIN {
             ]
         },
         {
+            "name" => "gtfs_shapes",
+            "columns" => [
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "shape_id",                  "type" => "text",    "nullable" => 0 },
+                { "name" => "shape_pt_lat",              "type" => "numeric", "nullable" => 0 },
+                { "name" => "shape_pt_lon",              "type" => "numeric", "nullable" => 0 },
+                { "name" => "shape_pt_sequence",         "type" => "integer", "nullable" => 0 },
+                { "name" => "shape_dist_traveled",       "type" => "numeric", "nullable" => 1 },
+            ],
+            "primary_key" => ["geo_gtfs_feed_instance_id", "shape_id"],
+            "indexes" => [
+                { "name" => "gtfs_shapes_01", "columns" => [ "geo_gtfs_feed_instance_id", "shape_id" ] },
+                { "name" => "gtfs_shapes_02", "columns" => [ "geo_gtfs_feed_instance_id", "shape_id", "shape_pt_sequence" ] },
+            ]
+        },
+        {
             "name" => "gtfs_trips",
             "gtfs_required" => 1,
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
-                { "name" => "route_id",                  "type" => "text",    "nullable" => 0, "references" => { "table" => "gtfs_routes", "column" => "id" } },
+                { "name" => "route_id",                  "type" => "text",    "nullable" => 0 },
                 { "name" => "service_id",                "type" => "text",    "nullable" => 0 },
                 { "name" => "trip_id",                   "type" => "text",    "nullable" => 0 },
                 { "name" => "trip_headsign",             "type" => "text",    "nullable" => 1 },
                 { "name" => "trip_short_name",           "type" => "text",    "nullable" => 1 },
                 { "name" => "direction_id",              "type" => "integer", "nullable" => 1 },
                 { "name" => "block_id",                  "type" => "text",    "nullable" => 1 },
-                { "name" => "shape_id",                  "type" => "text",    "nullable" => 1, "references" => { "table" => "gtfs_shapes", "column" => "id" } },
+                { "name" => "shape_id",                  "type" => "text",    "nullable" => 1 },
                 { "name" => "wheelchair_accessible",     "type" => "integer", "nullable" => 1 },
                 { "name" => "bikes_allowed",             "type" => "integer", "nullable" => 1 },
+            ],
+            "primary_key" => ["geo_gtfs_feed_instance_id", "trip_id"],
+            "foreign_key" => [
+                {
+                    "columns" => ["geo_gtfs_feed_instance_id", "route_id"],
+                    "references" => {
+                        "table" => "gtfs_routes",
+                        "columns" => ["geo_gtfs_feed_instance_id", "route_id"]
+                    }
+                },
+                {
+                    "columns" => ["geo_gtfs_feed_instance_id", "shape_id"],
+                    "references" => {
+                        "table" => "gtfs_shapes",
+                        "columns" => ["geo_gtfs_feed_instance_id", "shape_id"]
+                    }
+                }
             ],
             "indexes" => [
                 { "name" => "gtfs_trips_01", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id" ], "unique" => 1 },
@@ -205,10 +252,10 @@ BEGIN {
             "gtfs_required" => 1,
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
-                { "name" => "trip_id",                   "type" => "text",                 "nullable" => 0, "references" => { "table" => "gtfs_trips", "column" => "id" } },
+                { "name" => "trip_id",                   "type" => "text",                 "nullable" => 0 },
                 { "name" => "arrival_time",              "type" => "varchar", "size" => 8, "nullable" => 0 },
                 { "name" => "departure_time",            "type" => "varchar", "size" => 8, "nullable" => 0 },
-                { "name" => "stop_id",                   "type" => "text",                 "nullable" => 0, "references" => { "table" => "gtfs_stops", "column" => "id" } },
+                { "name" => "stop_id",                   "type" => "text",                 "nullable" => 0 },
                 { "name" => "stop_sequence",             "type" => "integer",              "nullable" => 0 },
                 { "name" => "stop_headsign",             "type" => "text",                 "nullable" => 1 },
                 { "name" => "pickup_type",               "type" => "integer",              "nullable" => 1 },
@@ -216,12 +263,29 @@ BEGIN {
                 { "name" => "shape_dist_traveled",       "type" => "numeric",              "nullable" => 1 },
                 { "name" => "timepoint",                 "type" => "integer",              "nullable" => 1 }, # new for 2018
             ],
+            "foreign_key" => [
+                {
+                    "columns" => ["geo_gtfs_feed_instance_id", "trip_id"],
+                    "references" => {
+                        "table" => "gtfs_trips",
+                        "columns" => ["geo_gtfs_feed_instance_id", "trip_id"]
+                    }
+                },
+                {
+                    "columns" => ["geo_gtfs_feed_instance_id", "stop_id"],
+                    "references" => {
+                        "table" => "gtfs_stops",
+                        "columns" => ["geo_gtfs_feed_instance_id", "stop_id"]
+                    }
+                }
+            ],
             "indexes" => [
                 { "name" => "gtfs_stop_times_01", "columns" => [ "geo_gtfs_feed_instance_id", "stop_id" ] },
                 { "name" => "gtfs_stop_times_02", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id" ] },
                 { "name" => "gtfs_stop_times_03", "columns" => [ "geo_gtfs_feed_instance_id", "stop_sequence" ] },
-                { "name" => "gtfs_stop_times_04", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id", "stop_id" ], "unique" => 1 },
-                { "name" => "gtfs_stop_times_05", "columns" => [ "geo_gtfs_feed_instance_id", "timepoint" ] }, # new for 2018
+                { "name" => "gtfs_stop_times_04", "drop" => 1, "columns" => [ "geo_gtfs_feed_instance_id", "trip_id", "stop_id" ], "unique" => 1 },
+                { "name" => "gtfs_stop_times_05", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id", "stop_id", "stop_sequence" ], "unique" => 1 },
+                { "name" => "gtfs_stop_times_06", "columns" => [ "geo_gtfs_feed_instance_id", "timepoint" ] }, # new for 2018
             ]
         },
         {
@@ -287,11 +351,27 @@ BEGIN {
             "name" => "gtfs_fare_rules",
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
-                { "name" => "fare_id",                   "type" => "text",    "nullable" => 0, "references" => { "table" => "gtfs_fare_attributes", "column" => "fare_id" } },
-                { "name" => "route_id",                  "type" => "text",    "nullable" => 1, "references" => { "table" => "gtfs_routes", "column" => "id" } },
+                { "name" => "fare_id",                   "type" => "text",    "nullable" => 0 },
+                { "name" => "route_id",                  "type" => "text",    "nullable" => 1 },
                 { "name" => "origin_id",                 "type" => "text",    "nullable" => 1 },
                 { "name" => "destination_id",            "type" => "text",    "nullable" => 1 },
                 { "name" => "contains_id",               "type" => "text",    "nullable" => 1 },
+            ],
+            "foreign_key" => [
+                {
+                    "columns" => ["geo_gtfs_feed_instance_id", "fare_id"],
+                    "references" => {
+                        "table" => "gtfs_fare_attributes",
+                        "columns" => ["geo_gtfs_feed_instance_id", "fare_id"]
+                    }
+                },
+                {
+                    "columns" => ["geo_gtfs_feed_instance_id", "route_id"],
+                    "references" => {
+                        "table" => "gtfs_routes",
+                        "columns" => ["geo_gtfs_feed_instance_id", "route_id"]
+                    }
+                }
             ],
             "indexes" => [
                 { "name" => "gtfs_fare_rules_01", "columns" => [ "geo_gtfs_feed_instance_id", "fare_id" ] },
@@ -302,29 +382,23 @@ BEGIN {
             ]
         },
         {
-            "name" => "gtfs_shapes",
-            "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
-                { "name" => "shape_id",                  "type" => "text",    "nullable" => 0 },
-                { "name" => "shape_pt_lat",              "type" => "numeric", "nullable" => 0 },
-                { "name" => "shape_pt_lon",              "type" => "numeric", "nullable" => 0 },
-                { "name" => "shape_pt_sequence",         "type" => "integer", "nullable" => 0 },
-                { "name" => "shape_dist_traveled",       "type" => "numeric", "nullable" => 1 },
-            ],
-            "indexes" => [
-                { "name" => "gtfs_shapes_01", "columns" => [ "geo_gtfs_feed_instance_id", "shape_id" ] },
-                { "name" => "gtfs_shapes_02", "columns" => [ "geo_gtfs_feed_instance_id", "shape_id", "shape_pt_sequence" ] },
-            ]
-        },
-        {
             "name" => "gtfs_frequencies",
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
-                { "name" => "trip_id",                   "type" => "text",                 "nullable" => 1, "references" => { "table" => "gtfs_trips", "column" => "id" } },
+                { "name" => "trip_id",                   "type" => "text",                 "nullable" => 1 },
                 { "name" => "start_time",                "type" => "varchar", "size" => 8, "nullable" => 1 },
                 { "name" => "end_time",                  "type" => "varchar", "size" => 8, "nullable" => 1 },
                 { "name" => "headway_secs",              "type" => "integer",              "nullable" => 1 },
                 { "name" => "exact_times",               "type" => "integer",              "nullable" => 1 },
+            ],
+            "foreign_key" => [
+                {
+                    "columns" => ["geo_gtfs_feed_instance_id", "trip_id"],
+                    "references" => {
+                        "table" => "gtfs_trips",
+                        "columns" => ["geo_gtfs_feed_instance_id", "trip_id"]
+                    }
+                },
             ],
             "indexes" => [
                 { "name" => "gtfs_frequencies_01", "columns" => [ "geo_gtfs_feed_instance_id", "trip_id" ] },
@@ -336,10 +410,26 @@ BEGIN {
             "name" => "gtfs_transfers",
             "columns" => [
                 { "name" => "geo_gtfs_feed_instance_id",       "type" => "integer",         "nullable" => 0,        "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
-                { "name" => "from_stop_id",                    "type" => "text",            "nullable" => 0,        "references" => { "table" => "gtfs_stops", "column" => "id" } },
-                { "name" => "to_stop_id",                      "type" => "text",            "nullable" => 0,        "references" => { "table" => "gtfs_stops", "column" => "id" } },
+                { "name" => "from_stop_id",                    "type" => "text",            "nullable" => 0 },
+                { "name" => "to_stop_id",                      "type" => "text",            "nullable" => 0 },
                 { "name" => "transfer_type",                   "type" => "integer",         "nullable" => 0 },
                 { "name" => "min_transfer_time",               "type" => "integer",         "nullable" => 1 },
+            ],
+            "foreign_key" => [
+                {
+                    "columns" => ["geo_gtfs_feed_instance_id", "from_stop_id"],
+                    "references" => {
+                        "table" => "gtfs_stops",
+                        "columns" => ["geo_gtfs_feed_instance_id", "stop_id"]
+                    }
+                },
+                {
+                    "columns" => ["geo_gtfs_feed_instance_id", "to_stop_id"],
+                    "references" => {
+                        "table" => "gtfs_stops",
+                        "columns" => ["geo_gtfs_feed_instance_id", "stop_id"]
+                    }
+                }
             ],
             "indexes" => [
                 { "name" => "gtfs_transfers_01", "columns" => [ "geo_gtfs_feed_instance_id", "from_stop_id" ] },
@@ -397,7 +487,7 @@ sub init {
 	my $HOME = $ENV{HOME} // $pwent[7];
 	$dir = $self->{dir} //= "$HOME/.geo-gtfs2";
     }
-    my $dbfile = $self->{sqlite_filename} //= "$dir/google_transit.sqlite";
+    $self->{sqlite_filename} //= "$dir/google_transit.sqlite";
 }
 
 our $CONNECTIONS;
@@ -421,11 +511,28 @@ sub dbh {
     }
 
     $CONNECTIONS->{$$} = {};
+<<<<<<< HEAD
     warn(sprintf("Connecting to %s ...\n", $dbfile)) if $self->{verbose} || -t 2;
     my $dbh = DBI->connect("dbi:SQLite:$dbfile", "", "",
                            { RaiseError => 1, AutoCommit => 0 });
     warn(sprintf("... connected!\n")) if $self->{verbose} || -t 2;
     $dbh->sqlite_busy_timeout(5000);
+=======
+    my ($dsn, $username, $password) = $self->get_credentials();
+    warn(sprintf("Connecting to %s ...\n", $dsn)) if $self->{verbose} || -t 2;
+    my $dbh = DBI->connect($dsn, $username, $password, { RaiseError => 1, AutoCommit => 0 });
+    warn(sprintf("... connected!\n", $dbfile)) if $self->{verbose} || -t 2;
+
+    my $drh = $dbh->{Driver};
+    my $driver_name = $drh->{Name};
+
+    if ($driver_name eq "Pg") {
+        # do nothing
+    } elsif ($driver_name eq "SQLite") {
+        $dbh->sqlite_busy_timeout(5000);
+    }
+
+>>>>>>> enhancements; fixes
     $CONNECTIONS->{$$}->{dbh} = $dbh;
     if (!$self->{no_auto_update}) {
         if (!$CONNECTIONS->{$$}->{tables_created}) {
@@ -434,6 +541,36 @@ sub dbh {
         }
     }
     return $dbh;
+}
+
+sub drh {
+    my ($self) = @_;
+    my $dbh = $self->dbh;
+    return $dbh->{Driver};
+}
+
+sub driver_name {
+    my ($self) = @_;
+    my $drh = $self->drh;
+    return $drh->{Name};
+}
+
+use Data::Dumper;
+
+sub get_credentials {
+    my ($self) = @_;
+    my $credentials_filename = "geo-gtfs-auth.yml";
+    my $credentials = eval {
+        LoadFile($credentials_filename);
+    };
+    if ($credentials) {
+        return ($credentials->{dsn},
+                $credentials->{username} // "",
+                $credentials->{password} // "");
+    }
+    my $filename = $self->{sqlite_filename};
+    my $dsn = "dbi:SQLite:$filename";
+    return ($dsn, "", "");
 }
 
 sub close_dbh {
@@ -487,7 +624,13 @@ sub select_or_insert_id {
     $sth->execute(@insert_values);
     $sth->finish();
 
-    $id = $self->dbh->last_insert_id("", "", "", "");
+    my $driver_name = $self->driver_name;
+
+    if ($driver_name eq "Pg") {
+        $id = $self->dbh->last_insert_id(undef, undef, $table_name, undef);
+    } else {
+        $id = $self->dbh->last_insert_id("", "", "", "");
+    }
 
     $self->dbh->commit();
 
@@ -1093,24 +1236,34 @@ sub sql_to_create_table {
     my ($self, $table) = @_;
     my @result;
 
-    my $sql;
-    $sql = sprintf("create table if not exists %s (\n",
-                   $self->quote_table_name($table->{name}));
-    my @spec = map { $self->sql_to_specify_table_column($_) }
-        @{$table->{columns}};
-    if (scalar @spec) {
-        $sql .= "    " . join(",\n    ", @spec);
-        $sql .= "\n";
+    if (!$self->table_exists($table->{name})) {
+        my $sql;
+        $sql = sprintf("create table if not exists %s (\n",
+                       $self->quote_table_name($table->{name}));
+        my @spec = map { $self->sql_to_specify_table_column($_) }
+            @{$table->{columns}};
+        if (scalar @spec) {
+            $sql .= "    " . join(",\n    ", @spec);
+            $sql .= "\n";
+        }
+        $sql .= ");\n";
+        push(@result, $sql);
     }
-    $sql .= ");\n";
-    push(@result, $sql);
 
     if (defined $table->{indexes}) {
         my @indexes = @{$table->{indexes}};
         foreach my $index (@indexes) {
-            my %index = %$index;
-            $index{table} = $table->{name};
-            push(@result, $self->sql_to_create_index(\%index));
+            if ($index->{drop}) {
+                if ($self->index_exists($table->{name}, $index->{name})) {
+                    push(@result, $self->sql_to_drop_index($index));
+                }
+            } else {
+                if (!$self->index_exists($table->{name}, $index->{name})) {
+                    my %index = %$index;
+                    $index{table} = $table->{name};
+                    push(@result, $self->sql_to_create_index(\%index));
+                }
+            }
         }
     }
 
@@ -1121,9 +1274,19 @@ sub sql_to_create_table {
 # column definition
 sub sql_to_specify_table_column {
     my ($self, $column) = @_;
+    my $driver_name = $self->driver_name;
     my $spec = sprintf("%s", $self->quote_column_name($column->{name}));
-    $spec .= sprintf(" %s", $column->{type});
-    $spec .= sprintf("(%d)", $column->{size}) if defined $column->{size};
+
+    my $is_pg_serial = 0;
+
+    if ($driver_name eq "Pg" && $column->{auto_increment}) {
+        $is_pg_serial = 1;
+        $spec .= " serial";
+    } else {
+        $spec .= sprintf(" %s", $column->{type});
+        $spec .= sprintf("(%d)", $column->{size}) if defined $column->{size};
+    }
+
     if (defined $column->{nullable} and not $column->{primary_key}) { # primary_key implies not null
         if ($column->{nullable}) {
             $spec .= " null";
@@ -1131,8 +1294,8 @@ sub sql_to_specify_table_column {
             $spec .= " not null";
         }
     }
-    $spec .= " primary key" if $column->{primary_key};
-    $spec .= " autoincrement" if $column->{auto_increment};
+    $spec .= " primary key"   if $column->{primary_key};
+    $spec .= " autoincrement" if $column->{auto_increment} && $driver_name eq "SQLite";
     $spec .= sprintf(" references %s(%s)",
                      $self->quote_table_name($column->{references}->{table}),
                      $self->quote_column_name($column->{references}->{column}))
@@ -1151,7 +1314,9 @@ sub sql_to_create_indexes {
     my ($self) = @_;
     my @result;
     foreach my $index (@{$INDEXES}) {
-        push(@result, $self->sql_to_create_index($index));
+        if (!$self->index_exists($index->{table}, $index->{name})) {
+            push(@result, $self->sql_to_create_index($index));
+        }
     }
     return @result if wantarray;
     return \@result;
@@ -1159,10 +1324,13 @@ sub sql_to_create_indexes {
 
 sub sql_to_create_index {
     my ($self, $index) = @_;
+    my $driver_name = $self->driver_name;
     my $sql = "create";
     $sql .= " unique" if $index->{unique};
     $sql .= " index";
-    $sql .= " if not exists";
+    if ($driver_name ne "Pg") {
+        $sql .= " if not exists";
+    }
     my $name = $index->{name} // sprintf("%s__idx__%s",
                                          $index->{table},
                                          join("__", @{$index->{columns}}));
@@ -1170,6 +1338,15 @@ sub sql_to_create_index {
     $sql .= sprintf(" on %s(%s);\n",
                     $self->quote_table_name($index->{table}),
                     join(", ", map { $self->quote_column_name($_) } @{$index->{columns}}));
+    return $sql;
+}
+
+sub sql_to_drop_index {
+    my ($self, $index) = @_;
+    my $name = $index->{name} // sprintf("%s__idx__%s",
+                                         $index->{table},
+                                         join("__", @{$index->{columns}}));
+    my $sql = sprintf("drop index %s;", $self->quote_index_name($name));
     return $sql;
 }
 
@@ -1186,6 +1363,32 @@ sub quote_column_name {
 sub quote_index_name {
     my ($self, $index_name) = @_;
     return $self->dbh->quote_identifier($index_name);
+}
+
+sub table_exists {
+    my ($self, $table_name) = @_;
+    my $sth = $self->dbh->table_info(undef, undef, $table_name, undef);
+    $sth->execute;
+    return $sth->fetchrow_hashref ? 1 : 0;
+}
+
+sub index_exists {
+    my ($self, $table_name, $index_name) = @_;
+    my $sth = $self->dbh->statistics_info(undef, undef, $table_name, 0, 1);
+    $sth->execute;
+    while (my $row = $sth->fetchrow_hashref) {
+        return 1 if defined $row->{INDEX_NAME} && $row->{INDEX_NAME} eq $index_name;
+    }
+    return 0;
+}
+
+sub table_field_info {
+    my ($self, $table_name, $field_name) = @_;
+    my ($table_info) = grep { $_->{name} eq $table_name } @$TABLES;
+    return if !$table_info;
+    my ($field_info) = grep { $_->{name} eq $field_name } @{$table_info->{columns}};
+    return if !$field_info;
+    return $field_info;
 }
 
 ###############################################################################
