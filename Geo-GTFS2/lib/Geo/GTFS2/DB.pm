@@ -1396,21 +1396,6 @@ sub sql_to_create_index {
     if ($driver_name ne "Pg") {
         $sql .= " if not exists";
     }
-
-    if (defined $index->{table}) {
-        $table_name = $index->{table};
-    } else {
-        if (defined $table) {
-            if (ref $table) {
-                $table_name = $table->{name};
-            } else {
-                $table_name = $table;
-            }
-        } else {
-            die("sql_to_create_index: can't find a table name");
-        }
-    }
-
     my $index_name = $index->{name} // sprintf("%s__idx__%s",
                                                $table_name,
                                                join("__", @{$index->{columns}}));
@@ -1422,11 +1407,12 @@ sub sql_to_create_index {
 }
 
 sub sql_to_drop_index {
-    my ($self, $index) = @_;
-    my $name = $index->{name} // sprintf("%s__idx__%s",
-                                         $table_name,
-                                         join("__", @{$index->{columns}}));
-    my $sql = sprintf("drop index %s;", $self->quote_index_name($name));
+    my ($self, $table, $index) = @_;
+    my $table_name = $index->{table} // (ref $table ? $table->{name} : $table);
+    my $index_name = $index->{name} // sprintf("%s__idx__%s",
+                                               $table_name,
+                                               join("__", @{$index->{columns}}));
+    my $sql = sprintf("drop index %s;", $self->quote_index_name($index_name));
     return $sql;
 }
 
