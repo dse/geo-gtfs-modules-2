@@ -12,7 +12,15 @@ sub __init {
 sub gtfs2 {
     my ($self) = @_;
     return $self->{gtfs2} if $self->{gtfs2};
-    return $self->{gtfs2} = Geo::GTFS2->new(no_auto_update => 1);
+    return $self->{gtfs2} = Geo::GTFS2->new(no_auto_update => $self->{no_auto_update});
+}
+
+sub no_auto_update {
+    my ($self, $no_auto_update) = @_;
+    if (scalar @_ >= 2) {
+        return $self->{no_auto_update} = $no_auto_update;
+    }
+    return $self->{no_auto_update};
 }
 
 # sub cmd__update_realtime {
@@ -99,12 +107,31 @@ sub cmd__list_agencies {
     my ($self) = @_;
     $self->gtfs2->list_agencies();
 }
-# sub help__list_agencies { {
-# } }
+
+sub cmd__list_feeds {
+    my ($self) = @_;
+    $self->gtfs2->list_feeds();
+}
+
+sub cmd__list_feed_instances {
+    my ($self) = @_;
+    $self->gtfs2->list_feed_instances();
+}
 
 sub cmd__url {
-    my ($self, $geo_gtfs_agency_name, $url) = @_;
-    $self->gtfs2->set_agency($geo_gtfs_agency_name);
+    my ($self, @arguments) = @_;
+
+    my $geo_gtfs_agency_name;
+    my $url;
+
+    foreach my $argument (@arguments) {
+        if ($argument =~ m{^https?://}i) {
+            $url = $argument;
+        } else {
+            $geo_gtfs_agency_name = $argument;
+        }
+    }
+
     $self->gtfs2->process_url($url);
 }
 
@@ -121,6 +148,7 @@ sub cmd__force_pull_gtfs_realtime_protocol {
 
 sub cmd__print_sql_to_create_tables {
     my ($self) = @_;
+    $self->no_auto_update(1);
     my @sql = $self->gtfs2->sql_to_create_tables;
     foreach my $sql (@sql) {
         print $sql;
@@ -129,6 +157,7 @@ sub cmd__print_sql_to_create_tables {
 
 sub cmd__print_sql_to_drop_tables {
     my ($self) = @_;
+    $self->no_auto_update(1);
     my @sql = $self->gtfs2->sql_to_drop_tables;
     foreach my $sql (@sql) {
         print $sql;
@@ -137,10 +166,38 @@ sub cmd__print_sql_to_drop_tables {
 
 sub cmd__print_sql_to_update_tables {
     my ($self) = @_;
+    $self->no_auto_update(1);
     my @sql = $self->gtfs2->sql_to_update_tables;
     foreach my $sql (@sql) {
         print $sql;
     }
+}
+
+sub cmd__delete_feed_instance {
+    my ($self, $feed_instance_id) = @_;
+    $self->no_auto_update(1);
+    $self->gtfs2->delete_feed_instance($feed_instance_id);
+}
+sub help__delete_feed_instance { {
+    required => "FEED_INSTANCE_ID"
+} }
+
+sub cmd__update_tables {
+    my ($self) = @_;
+    $self->no_auto_update(1);
+    $self->gtfs2->update_tables;
+}
+
+sub cmd__find_non_uniqueness {
+    my ($self) = @_;
+    $self->no_auto_update(1);
+    $self->gtfs2->find_non_uniqueness;
+}
+
+sub cmd__delete_all_data {
+    my ($self) = @_;
+    $self->no_auto_update(1);
+    $self->gtfs2->delete_all_data;
 }
 
 sub cmd__AUTOLOAD {

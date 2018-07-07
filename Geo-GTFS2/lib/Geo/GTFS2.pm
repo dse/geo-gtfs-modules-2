@@ -21,6 +21,7 @@ use LWP::UserAgent;
 use List::MoreUtils qw(all);
 use POSIX qw(strftime);
 use Text::CSV;
+use feature qw(say);
 
 # [1] File::MMagic best detects .zip files, and allows us to add magic
 # for Google Protocol Buffers files.
@@ -168,35 +169,64 @@ use Digest::MD5 qw/md5_hex/;
 
 sub process_gtfs_feed {
     my ($self, $request, $response) = @_;
-    my $url = $response->base;
+    my $base_url = $response->base->as_string;
     my $cached = ($response->code == 304 || ($response->header("X-Cached") && $response->header("X-Content-Unchanged")));
     my $cref = $response->content_ref;
+    my $content = $response->content;
 
     my $retrieved     = $response->date;
     my $last_modified = $response->last_modified;
     my $content_length = $response->content_length;
 
-    my $md5 = md5_hex($url);
+    my $md5 = md5_hex($base_url);
 
-    my $zip_filename     = sprintf("%s/data/%s/gtfs/%s-%s-%s-%s.zip", $self->{dir}, $self->{geo_gtfs_agency_name}, $md5, $retrieved, $last_modified, $content_length);
-    my $rel_zip_filename = sprintf(   "data/%s/gtfs/%s-%s-%s-%s.zip",               $self->{geo_gtfs_agency_name}, $md5, $retrieved, $last_modified, $content_length);
+    my $dh;
+    open($dh, "+<", \$content);
+
+    my $zip = Archive::Zip->new;
+    $zip->readFromFileHandle($dh);
+
+    my $agency_txt_member = $self->find_agency_txt_member($zip);
+    if (!$agency_txt_member) {
+        die("no .zip member matching */agency.txt");
+    }
+    my $agency_parsed = $self->parse_zip_member($zip, $agency_txt_member);
+    if (!$agency_parsed) {
+        die("no agency data");
+    }
+    my $agency_rows = $agency_parsed->{rows};
+    print(Dumper($agency_rows));
+    if (!scalar @$agency_rows) {
+        die("no agency data");
+    }
+    if (scalar @$agency_rows > 1) {
+        die("More than one agency? Eh?");
+    }
+
+    my $agency_name = $agency_rows->[0]->{agency_name};
+    my $agency_id = $self->select_or_insert_geo_gtfs_agency_id($agency_name);
+
+    my $zip_filename = sprintf("%s/data/%s/gtfs/%s-%s-%s-%s.zip",
+                               $self->{dir},
+                               $agency_name,
+                               $md5,
+                               $retrieved,
+                               $last_modified,
+                               $content_length);
+    my $rel_zip_filename = File::Spec->abs2rel($zip_filename,
+                                               $self->{dir});
     make_path(dirname($zip_filename));
-    if (open(my $fh, ">", $zip_filename)) {
-	binmode($fh);
-	print {$fh} $$cref;
-	close($fh);
-    } else {
-	die("Cannot write $zip_filename: $!\n");
-    }
+    die("$!") unless $self->file_put_contents_binary($zip_filename, $content);
 
-    my $zip = Archive::Zip->new();
-    unless ($zip->read($zip_filename) == AZ_OK) {
-	die("zip read error $zip_filename\n");
-    }
-    my @members = $zip->members();
-
-    $self->{geo_gtfs_feed_id} = $self->db->select_or_insert_geo_gtfs_feed_id($self->{geo_gtfs_agency_id}, $url);
-    my $geo_gtfs_feed_instance_id = $self->db->select_or_insert_geo_gtfs_feed_instance_id($self->{geo_gtfs_feed_id}, $rel_zip_filename, $retrieved, $last_modified);
+    my $geo_gtfs_feed_id =
+        $self->{geo_gtfs_feed_id} =
+        $self->db->select_or_insert_geo_gtfs_feed_id(
+            $agency_id, $base_url
+        );
+    my $geo_gtfs_feed_instance_id =
+        $self->db->select_or_insert_geo_gtfs_feed_instance_id(
+            $geo_gtfs_feed_id, $rel_zip_filename, $retrieved, $last_modified
+        );
 
     my $sth;
 
@@ -204,11 +234,11 @@ sub process_gtfs_feed {
     my $save_flush  = $|;
     $| = 1;
 
-    foreach my $member (@members) {
-	my $filename = $member->fileName();
-	my $basename = basename($filename, ".txt");
-	my $table_name = "gtfs_$basename";
+    $self->delete_feed_instance_data($geo_gtfs_feed_instance_id);
 
+    foreach my $member ($zip->members) {
+        my $member_parsed = $self->parse_zip_member($zip, $member);
+        my $table_name = $member_parsed->{table_name};
         if (!$self->db->table_exists($table_name)) {
             warn("No such table: $table_name\n");
             next;
@@ -267,19 +297,119 @@ sub process_gtfs_feed {
     select($save_select);
 }
 
+sub file_put_contents_binary {
+    my ($self, $filename, $data) = @_;
+    my $fh;
+    if (!open($fh, ">", $filename)) {
+        warn("open $filename: $!\n");
+        return 0;
+    }
+    if (!binmode($fh)) {
+        warn("binmode $filename: $!\n");
+        return 0;
+    }
+    if (ref $data) {
+        if (!print $fh ($$data)) {
+            warn("print $filename: $!\n");
+            return 0;
+        }
+    } else {
+        if (!print $fh ($data)) {
+            warn("print $filename: $!\n");
+            return 0;
+        }
+    }
+    if (!close($fh)) {
+        warn("close: $!\n");
+        return 0;
+    }
+    return 1;
+}
+
+sub find_agency_txt_member {
+    my ($self, $zip) = @_;
+    my $zip_filename = $zip->fileName;
+    my $member = $zip->memberNamed("agency.txt");
+    return $member if $member;
+    my @members = $zip->membersMatching('(^|[/\\\\])agency.txt$');
+    if (scalar @members < 1) {
+        warn("$zip_filename; no member named */agency.txt\n");
+        return;
+    }
+    return $members[0];
+}
+
+sub parse_zip_member {
+    my ($self, $zip, $member) = @_;
+
+    my $zip_filename = $zip->fileName;
+    my $member_filename = $member->fileName;
+    my $member_basename = basename($member_filename, ".txt");
+    my $table_name = "gtfs_$member_basename";
+
+    my $fh = Archive::Zip::MemberRead->new($zip, $member);
+
+    my $csv = Text::CSV->new ({ binary => 1 });
+    my $line = $fh->getline;
+    $line =~ s{[\r\n]+$}{};
+    $csv->parse($line);
+    my $fields = [$csv->fields()];
+    if (!($fields && scalar @$fields)) {
+        warn("$zip_filename: $member_filename has no fields\n");
+        return;
+    }
+
+    my @rows;
+    while (defined(my $line = $fh->getline)) {
+        $line =~ s{[\r\n]+$}{};
+        next unless $line =~ m{\S};
+        $csv->parse($line);
+        my $data = [$csv->fields()];
+        next unless $data && scalar @$data;
+        my $row = {};
+        for (my $i = 0; $i < scalar @$data || $i < scalar @$fields; $i += 1) {
+            my $key   = $fields->[$i];
+            my $value = $data->[$i];
+            $row->{$key} = $value if defined $key && defined $value;
+        }
+        push(@rows, $row);
+    }
+
+    return {
+        table_name => $table_name,
+        fields     => $fields,
+        rows       => \@rows
+    };
+}
+
 ###############################################################################
 # AGENCIES
 ###############################################################################
 
-sub get_agencies {
-    my ($self) = @_;
-    my $sth = $self->dbh->prepare("select * from geo_gtfs_agency");
-    $sth->execute();
-    my @rows;
-    while (my $row = $sth->fetchrow_hashref()) {
-	push(@rows, $row);
-    }
-    return @rows;
+sub select_or_insert_geo_gtfs_agency_id {
+    my ($self, $geo_gtfs_agency_name) = @_;
+    my $sth = $self->dbh->prepare(<<"END");
+        select * from geo_gtfs_agency where name = ?;
+END
+    $sth->execute($geo_gtfs_agency_name);
+    my $row = $sth->fetchrow_hashref;
+    return $row->{id} if $row;
+    my $hash = $self->create_geo_gtfs_agency($geo_gtfs_agency_name);
+    return $hash->{id};
+}
+
+sub create_geo_gtfs_agency {
+    my ($self, $geo_gtfs_agency_name) = @_;
+    my $sth = $self->dbh->prepare(<<"END");
+        insert into geo_gtfs_agency (name) values (?);
+END
+    $sth->execute($geo_gtfs_agency_name);
+    $sth->finish;
+    my $id = $self->dbh->last_insert_id("", "", "", "");
+    $self->dbh->commit;
+    return {
+        id => $id
+    };
 }
 
 sub list_agencies {
@@ -320,6 +450,30 @@ END
     }
 }
 
+sub list_feed_instances {
+    my ($self) = @_;
+    my $sth = $self->dbh->prepare(<<"END");
+        select fi.id                 as id,
+               fi.geo_gtfs_feed_id   as geo_gtfs_feed_id,
+               fi.filename           as filename,
+               fi.retrieved          as retrieved,
+               fi.last_modified      as last_modified,
+               fi.is_latest          as is_latest,
+               f.geo_gtfs_agency_id  as geo_gtfs_agency_id,
+               f.url                 as url,
+               f.is_active           as is_active,
+               a.name                as name
+        from geo_gtfs_feed_instance fi
+             join geo_gtfs_feed f on fi.geo_gtfs_feed_id = f.id
+             join geo_gtfs_agency a on a.id = f.geo_gtfs_agency_id;
+END
+    $sth->execute();
+    while (my $row = $sth->fetchrow_hashref) {
+        printf("%4d. (%s) %s\n", $row->{name}, $row->{url});
+        printf("     retrieved %s; last modified %s\n", localtime($row->{retrieved}), localtime($row->{last_modified}));
+    }
+}
+
 sub is_agency_name {
     my ($self, $arg) = @_;
     return $arg =~ m{^
@@ -341,8 +495,10 @@ sub exec_sqlite_utility {
 
 sub is_ipv4_address {
     my ($self, $arg) = @_;
+    warn $arg;
     return 0 unless $arg =~ m{^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$};
     my @octet = ($1, $2, $3, $4);
+    warn @octet;
     return all { $_ >= 0 && $_ <= 255 } @octet;
 }
 
@@ -372,6 +528,14 @@ sub realtime {
 # DB WRAPPER
 ###############################################################################
 
+sub get_table_info {
+    my ($self, $table_name) = @_;
+    my $sth = $self->dbh->table_info(undef, "%", $table_name, "TABLE");
+    $sth->execute();
+    my $row = $sth->fetchrow_hashref();
+    return $row;
+}
+
 sub sql_to_create_tables {
     my ($self) = @_;
     return $self->db->sql_to_create_tables;
@@ -385,6 +549,31 @@ sub sql_to_drop_tables {
 sub sql_to_update_tables {
     my ($self) = @_;
     return $self->db->sql_to_update_tables;
+}
+
+sub delete_feed_instance {
+    my ($self, $feed_instance_id) = @_;
+    $self->db->delete_feed_instance($feed_instance_id);
+}
+
+sub delete_feed_instance_data {
+    my ($self, $feed_instance_id) = @_;
+    $self->db->delete_feed_instance_data($feed_instance_id);
+}
+
+sub update_tables {
+    my ($self) = @_;
+    $self->db->update_tables;
+}
+
+sub find_non_uniqueness {
+    my ($self) = @_;
+    $self->db->find_non_uniqueness;
+}
+
+sub delete_all_data {
+    my ($self) = @_;
+    $self->db->delete_all_data;
 }
 
 use Geo::GTFS2::DB;

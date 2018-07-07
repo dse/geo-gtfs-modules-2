@@ -34,9 +34,6 @@ BEGIN {
             "name" => "geo_gtfs_agency",
             "columns" => [
                 { "name" => "id",   "type" => "integer", "nullable" => 0, "primary_key" => 1, "auto_increment" => 1 },
-
-                # preferably the transit agency's domain name, without a
-                # "www." prefix.  examples: 'ridetarc.org', 'ttc.ca'
                 { "name" => "name", "type" => "varchar", "size" => 64, "nullable" => 0 },
             ],
             "indexes" => [
@@ -1392,6 +1389,7 @@ sub sql_to_create_indexes {
 sub sql_to_create_index {
     my ($self, $table, $index) = @_;
     my $driver_name = $self->driver_name;
+    my $table_name = $index->{table} // (ref $table ? $table->{name} : $table);
     my $sql = "create";
     $sql .= " unique" if $index->{unique};
     $sql .= " index";
@@ -1399,7 +1397,6 @@ sub sql_to_create_index {
         $sql .= " if not exists";
     }
 
-    my $table_name;
     if (defined $index->{table}) {
         $table_name = $index->{table};
     } else {
@@ -1427,7 +1424,7 @@ sub sql_to_create_index {
 sub sql_to_drop_index {
     my ($self, $index) = @_;
     my $name = $index->{name} // sprintf("%s__idx__%s",
-                                         $index->{table},
+                                         $table_name,
                                          join("__", @{$index->{columns}}));
     my $sql = sprintf("drop index %s;", $self->quote_index_name($name));
     return $sql;
