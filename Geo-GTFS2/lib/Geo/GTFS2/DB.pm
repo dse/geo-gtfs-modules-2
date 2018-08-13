@@ -108,7 +108,7 @@ BEGIN {
             "name" => "gtfs_agency",
             "gtfs_required" => 1,
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
 
                 # for feeds containing only one agency, this can be NULL.
                 { "name" => "agency_id",                 "type" => "text",                 "nullable" => 1 },
@@ -129,7 +129,7 @@ BEGIN {
             "name" => "gtfs_stops",
             "gtfs_required" => 1,
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "stop_id",                   "type" => "text",    "nullable" => 0 },
                 { "name" => "stop_code",                 "type" => "text",    "nullable" => 1 },
                 { "name" => "stop_name",                 "type" => "text",    "nullable" => 0 },
@@ -156,7 +156,7 @@ BEGIN {
             "name" => "gtfs_routes",
             "gtfs_required" => 1,
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "route_id",                  "type" => "text",                 "nullable" => 0 },
                 { "name" => "agency_id",                 "type" => "text",                 "nullable" => 1 },
                 { "name" => "route_short_name",          "type" => "text",                 "nullable" => 0 },
@@ -189,7 +189,7 @@ BEGIN {
         {
             "name" => "gtfs_shapes",
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "shape_id",                  "type" => "text",    "nullable" => 0 },
                 { "name" => "shape_pt_lat",              "type" => "numeric", "nullable" => 0 },
                 { "name" => "shape_pt_lon",              "type" => "numeric", "nullable" => 0 },
@@ -206,7 +206,7 @@ BEGIN {
             "name" => "gtfs_trips",
             "gtfs_required" => 1,
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "route_id",                  "type" => "text",    "nullable" => 0 },
                 { "name" => "service_id",                "type" => "text",    "nullable" => 0 },
                 { "name" => "trip_id",                   "type" => "text",    "nullable" => 0 },
@@ -248,7 +248,7 @@ BEGIN {
             "name" => "gtfs_stop_times",
             "gtfs_required" => 1,
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "trip_id",                   "type" => "text",                 "nullable" => 0 },
                 { "name" => "arrival_time",              "type" => "varchar", "size" => 8, "nullable" => 0 },
                 { "name" => "departure_time",            "type" => "varchar", "size" => 8, "nullable" => 0 },
@@ -289,7 +289,7 @@ BEGIN {
             "name" => "gtfs_calendar",
             "gtfs_required" => 1,
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "service_id",                "type" => "text",                 "nullable" => 0 },
                 { "name" => "monday",                    "type" => "integer",              "nullable" => 0 },
                 { "name" => "tuesday",                   "type" => "integer",              "nullable" => 0 },
@@ -317,7 +317,7 @@ BEGIN {
         {
             "name" => "gtfs_calendar_dates",
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "service_id",                "type" => "text",                 "nullable" => 0 },
                 { "name" => "date",                      "type" => "varchar", "size" => 8, "nullable" => 0 },
                 { "name" => "exception_type",            "type" => "integer",              "nullable" => 0 },
@@ -331,7 +331,7 @@ BEGIN {
         {
             "name" => "gtfs_fare_attributes",
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "fare_id",                   "type" => "text",    "nullable" => 0 },
                 { "name" => "price",                     "type" => "numeric", "nullable" => 0 },
                 { "name" => "currency_type",             "type" => "text",    "nullable" => 0 },
@@ -347,7 +347,7 @@ BEGIN {
         {
             "name" => "gtfs_fare_rules",
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "fare_id",                   "type" => "text",    "nullable" => 0 },
                 { "name" => "route_id",                  "type" => "text",    "nullable" => 1 },
                 { "name" => "origin_id",                 "type" => "text",    "nullable" => 1 },
@@ -381,7 +381,7 @@ BEGIN {
         {
             "name" => "gtfs_frequencies",
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "trip_id",                   "type" => "text",                 "nullable" => 1 },
                 { "name" => "start_time",                "type" => "varchar", "size" => 8, "nullable" => 1 },
                 { "name" => "end_time",                  "type" => "varchar", "size" => 8, "nullable" => 1 },
@@ -406,7 +406,7 @@ BEGIN {
         {
             "name" => "gtfs_transfers",
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id",       "type" => "integer",         "nullable" => 0,        "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id",       "type" => "integer",         "nullable" => 0,        "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "from_stop_id",                    "type" => "text",            "nullable" => 0 },
                 { "name" => "to_stop_id",                      "type" => "text",            "nullable" => 0 },
                 { "name" => "transfer_type",                   "type" => "integer",         "nullable" => 0 },
@@ -436,7 +436,7 @@ BEGIN {
         {
             "name" => "gtfs_feed_info",
             "columns" => [
-                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed", "column" => "id" } },
+                { "name" => "geo_gtfs_feed_instance_id", "type" => "integer",              "nullable" => 0, "references" => { "table" => "geo_gtfs_feed_instance", "column" => "id" } },
                 { "name" => "feed_publisher_name",       "type" => "text",                 "nullable" => 0 },
                 { "name" => "feed_publisher_url",        "type" => "text",                 "nullable" => 0 },
                 { "name" => "feed_lang",                 "type" => "text",                 "nullable" => 0 },
@@ -615,6 +615,9 @@ sub select_or_insert_id {
     $sth->finish();
 
     if (defined $id) {
+        if (wantarray) {
+            return ($id, 0);
+        }
 	return $id;
     }
 
@@ -651,8 +654,13 @@ sub select_or_insert_id {
     }
 
     if (defined $id) {
+        if (wantarray) {
+            return ($id, 1);
+        }
 	return $id;
     }
+
+    return;
 }
 
 sub drop_tables {
