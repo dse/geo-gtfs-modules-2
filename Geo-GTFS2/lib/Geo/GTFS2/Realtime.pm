@@ -158,6 +158,9 @@ sub process_gtfs_realtime_data {
                                                                             $retrieved,
                                                                             $last_modified,
                                                                             $header_timestamp);
+        warn(sprintf("process_gtfs_realtime_data: geo_gtfs_realtime_feed_id is %s\n", $gtfs2->{geo_gtfs_realtime_feed_id}));
+        warn(sprintf("process_gtfs_realtime_data: geo_gtfs_realtime_feed_instance_id is %s\n", $gtfs2->{geo_gtfs_realtime_feed_instance_id}));
+        $gtfs2->db->dbh->commit;
     }
     return $o;
 }

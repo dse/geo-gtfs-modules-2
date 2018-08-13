@@ -132,6 +132,10 @@ sub cmd__url {
         }
     }
 
+    if (defined $geo_gtfs_agency_name) {
+        $self->gtfs2->set_agency($geo_gtfs_agency_name);
+    }
+
     $self->gtfs2->process_url($url);
 }
 
@@ -162,6 +166,16 @@ sub cmd__print_sql_to_drop_tables {
     foreach my $sql (@sql) {
         print $sql;
     }
+}
+
+sub cmd__drop_tables {
+    my ($self) = @_;
+    $self->gtfs2->drop_tables;
+}
+
+sub cmd__create_tables {
+    my ($self) = @_;
+    $self->gtfs2->create_tables;
 }
 
 sub cmd__print_sql_to_update_tables {

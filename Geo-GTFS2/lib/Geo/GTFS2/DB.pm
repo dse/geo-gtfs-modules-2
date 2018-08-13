@@ -74,7 +74,7 @@ BEGIN {
         {
             "name" => "geo_gtfs_realtime_feed",
             "columns" => [
-                { "name" => "id",                 "type" => "integer",               "nullable" => 0, "primary_key" => 1 },
+                { "name" => "id",                 "type" => "integer",               "auto_increment" => 1, "nullable" => 0, "primary_key" => 1 },
                 { "name" => "geo_gtfs_agency_id", "type" => "integer",               "nullable" => 0, "references" => { "table" => "geo_gtfs_agency", "column" => "id" } },
                 { "name" => "url",                "type" => "text",                  "nullable" => 0 },
 
@@ -92,7 +92,7 @@ BEGIN {
         {
             "name" => "geo_gtfs_realtime_feed_instance",
             "columns" => [
-                { "name" => "id",                        "type" => "integer", "nullable" => 0, "primary_key" => 1 },
+                { "name" => "id",                        "type" => "integer", "nullable" => 0, "primary_key" => 1, "auto_increment" => 1 },
                 { "name" => "geo_gtfs_realtime_feed_id", "type" => "integer", "nullable" => 0, "references" => { "table" => "geo_gtfs_realtime_feed", "column" => "id" } },
                 { "name" => "filename",                  "type" => "text",    "nullable" => 0 },
                 { "name" => "retrieved",                 "type" => "integer", "nullable" => 0 },
@@ -508,7 +508,8 @@ sub dbh {
     }
 
     $CONNECTIONS->{$$} = {};
-    my ($dsn, $username, $password) = $self->get_credentials();
+    my $credentials = $self->get_credentials();
+    my ($dsn, $username, $password) = @{$credentials}{qw(dsn username password)};
     warn(sprintf("Connecting to %s ...\n", $dsn)) if $self->{verbose} || -t 2;
     my $dbh = DBI->connect($dsn, $username, $password, { RaiseError => 1, AutoCommit => 0 });
     warn(sprintf("... connected!\n", $dbfile)) if $self->{verbose} || -t 2;
@@ -550,18 +551,41 @@ use Data::Dumper;
 
 sub get_credentials {
     my ($self) = @_;
-    my $credentials_filename = "geo-gtfs-auth.yml";
+    return $self->get_credentials_from_environment() ||
+        $self->get_credentials_from_yml_file() ||
+        $self->get_default_credentials();
+}
+
+sub get_credentials_from_yml_file {
+    my ($self) = @_;
     my $credentials = eval {
-        LoadFile($credentials_filename);
+        LoadFile("geo-gtfs-auth.yml");
     };
-    if ($credentials) {
-        return ($credentials->{dsn},
-                $credentials->{username} // "",
-                $credentials->{password} // "");
-    }
+    return $credentials if $credentials;
+    return;
+}
+
+sub get_credentials_from_environment {
+    my ($self) = @_;
+    my $dsn      = $ENV{GEO_GTFS_DB_DSN};
+    my $username = $ENV{GEO_GTFS_DB_USERNAME} // "";
+    my $password = $ENV{GEO_GTFS_DB_PASSWORD} // "";
+    return {
+        dsn => $dsn,
+        username => $username,
+        password => $password
+    } if defined $dsn;
+    return;
+}
+
+sub get_default_credentials {
+    my ($self) = @_;
     my $filename = $self->{sqlite_filename};
-    my $dsn = "dbi:SQLite:$filename";
-    return ($dsn, "", "");
+    return {
+        dsn      => "dbi:SQLite:$filename",
+        username => "",
+        password => ""
+    };
 }
 
 sub close_dbh {
@@ -589,8 +613,8 @@ sub select_or_insert_id {
     $sth->execute(@key_values);
     my ($id) = $sth->fetchrow_array();
     $sth->finish();
+
     if (defined $id) {
-	$self->dbh->rollback();
 	return $id;
     }
 
@@ -612,6 +636,9 @@ sub select_or_insert_id {
 
     $sql = "insert into $table_name($insert_field_names) values($insert_placeholders)";
     $sth = $self->dbh->prepare($sql);
+
+    warn("$sql\n");
+
     $sth->execute(@insert_values);
     $sth->finish();
 
@@ -623,10 +650,7 @@ sub select_or_insert_id {
         $id = $self->dbh->last_insert_id("", "", "", "");
     }
 
-    $self->dbh->commit();
-
     if (defined $id) {
-	$self->dbh->rollback();
 	return $id;
     }
 }
@@ -729,6 +753,7 @@ END
 
 sub select_or_insert_geo_gtfs_realtime_feed_id {
     my ($self, $geo_gtfs_agency_id, $url, $feed_type) = @_;
+    $url = $url->as_string if ref $url;
     return $self->select_or_insert_id("table_name" => "geo_gtfs_realtime_feed",
 				      "id_name" => "id",
 				      "key_fields" => { "geo_gtfs_agency_id" => $geo_gtfs_agency_id,
@@ -897,7 +922,7 @@ END
 
 sub get_geo_gtfs_feed_instance_id_and_service_id {
     my ($self, $geo_gtfs_agency_id, $date) = @_;
-    
+
     if ($date =~ m{^(\d{4})(\d{2})(\d{2})$}) {
 	$date = "$1-$2-$3";
     }
@@ -912,7 +937,7 @@ sub get_geo_gtfs_feed_instance_id_and_service_id {
 	from gtfs_calendar c
           join geo_gtfs_feed_instance i on c.geo_gtfs_feed_instance_id = i.id
           join geo_gtfs_feed f          on i.geo_gtfs_feed_id = f.id
-        where $wday_column and ? between start_date and end_date
+        where ($wday_column != 0) and (? between start_date and end_date)
           and geo_gtfs_agency_id = ?
         order by start_date desc, end_date asc
 END
@@ -1174,7 +1199,9 @@ END
     my $sth = $self->dbh->prepare($sql);
     $sth->execute();
     while (my $row = $sth->fetchrow_hashref) {
-        print(Dumper($row));
+        if (-t 1 && -t 2) {
+            print(Dumper($row));
+        }
     }
 }
 
@@ -1238,9 +1265,14 @@ sub sql_to_alter_table {
     }
   index:
     foreach my $index (@{$table->{indexes}}) {
-        my $sth = $self->dbh->statistics_info(undef, undef, $table->{name}, 0, 0);
-        if (!$self->get_index_info($table, $index, 1)) {
-            push(@result, $self->sql_to_create_index($table, $index));
+        if ($index->{drop}) {
+            if ($self->index_exists($table->{name}, $index->{name})) {
+                push(@result, $self->sql_to_drop_index($table, $index));
+            }
+        } else {
+            if (!$self->index_exists($table->{name}, $index->{name})) {
+                push(@result, $self->sql_to_create_index($table, $index));
+            }
         }
     }
     return @result if wantarray;
@@ -1251,10 +1283,12 @@ sub get_index_info {
     my ($self, $table, $index, $wantflag) = @_;
     my @result;
     my $sth = $self->dbh->statistics_info(undef, undef, $index->{table} // $table->{name}, 0, 0);
-    while (my $row = $sth->fetchrow_hashref) {
-        if ($row->{INDEX_NAME} eq $index->{name}) {
-            return 1 if $wantflag;
-            push(@result, $row);
+    if ($sth) {
+        while (my $row = $sth->fetchrow_hashref) {
+            if (defined $row->{INDEX_NAME} && $row->{INDEX_NAME} eq $index->{name}) {
+                return 1 if $wantflag;
+                push(@result, $row);
+            }
         }
     }
     return 0 if $wantflag;
@@ -1273,7 +1307,7 @@ sub sql_to_alter_table_add_column {
 sub sql_to_drop_tables {
     my ($self) = @_;
     my @result;
-    foreach my $table (@{$TABLES}) {
+    foreach my $table (reverse @{$TABLES}) {
         push(@result, $self->sql_to_drop_table($table));
     }
     return @result if wantarray;
@@ -1321,7 +1355,7 @@ sub sql_to_create_table {
         foreach my $index (@indexes) {
             if ($index->{drop}) {
                 if ($self->index_exists($table->{name}, $index->{name})) {
-                    push(@result, $self->sql_to_drop_index($index));
+                    push(@result, $self->sql_to_drop_index($table, $index));
                 }
             } else {
                 if (!$self->index_exists($table->{name}, $index->{name})) {
@@ -1441,9 +1475,11 @@ sub table_exists {
 sub index_exists {
     my ($self, $table_name, $index_name) = @_;
     my $sth = $self->dbh->statistics_info(undef, undef, $table_name, 0, 1);
-    $sth->execute;
-    while (my $row = $sth->fetchrow_hashref) {
-        return 1 if defined $row->{INDEX_NAME} && $row->{INDEX_NAME} eq $index_name;
+    if ($sth) {
+        $sth->execute;
+        while (my $row = $sth->fetchrow_hashref) {
+            return 1 if defined $row->{INDEX_NAME} && $row->{INDEX_NAME} eq $index_name;
+        }
     }
     return 0;
 }

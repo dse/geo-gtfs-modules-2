@@ -75,6 +75,9 @@ sub set_agency {
     $self->{geo_gtfs_agency_name} = $agency_name;
     $self->{geo_gtfs_agency_id} =
         $self->db->select_or_insert_geo_gtfs_agency_id($agency_name);
+
+    warn(sprintf("geo_gtfs_agency_name is %s\n", $self->{geo_gtfs_agency_name}));
+    warn(sprintf("geo_gtfs_agency_id is %s\n", $self->{geo_gtfs_agency_id}));
 }
 
 sub set_agency_id {
@@ -174,8 +177,11 @@ sub process_gtfs_feed {
     my $cref = $response->content_ref;
     my $content = $response->content;
 
-    my $retrieved     = $response->date;
-    my $last_modified = $response->last_modified;
+    warn(length($$cref));
+    warn(length($content));
+
+    my $retrieved      = $response->date;
+    my $last_modified  = $response->last_modified;
     my $content_length = $response->content_length;
 
     my $md5 = md5_hex($base_url);
@@ -184,7 +190,9 @@ sub process_gtfs_feed {
     open($dh, "+<", \$content);
 
     my $zip = Archive::Zip->new;
-    $zip->readFromFileHandle($dh);
+    if ($zip->readFromFileHandle($dh) != AZ_OK) {
+        die($!);
+    }
 
     my $agency_txt_member = $self->find_agency_txt_member($zip);
     if (!$agency_txt_member) {
@@ -195,7 +203,6 @@ sub process_gtfs_feed {
         die("no agency data");
     }
     my $agency_rows = $agency_parsed->{rows};
-    print(Dumper($agency_rows));
     if (!scalar @$agency_rows) {
         die("no agency data");
     }
@@ -203,8 +210,10 @@ sub process_gtfs_feed {
         die("More than one agency? Eh?");
     }
 
-    my $agency_name = $agency_rows->[0]->{agency_name};
+    my $agency_name = $self->{geo_gtfs_agency_name} // $agency_rows->[0]->{agency_name};
     my $agency_id = $self->select_or_insert_geo_gtfs_agency_id($agency_name);
+    warn("process_gtfs_feed: agency_name is $agency_name\n");
+    warn("process_gtfs_feed: agency_id is $agency_id\n");
 
     my $zip_filename = sprintf("%s/data/%s/gtfs/%s-%s-%s-%s.zip",
                                $self->{dir},
@@ -244,6 +253,19 @@ sub process_gtfs_feed {
             next;
         }
 
+
+        my $filename = $member->fileName();
+        warn($filename);
+
+        my $linecount = do {
+            my $fh = Archive::Zip::MemberRead->new($zip, $filename);
+            my $count = 0;
+            while (defined($fh->getline())) {
+                ++$count;
+            }
+            $count;
+        };
+
 	my $fh = Archive::Zip::MemberRead->new($zip, $filename);
 
 	my $csv = Text::CSV->new ({ binary => 1 });
@@ -269,8 +291,8 @@ sub process_gtfs_feed {
 	print STDERR ("Populating $table_name ...\n");
 
         my $progress = Geo::GTFS2::Util::Progress->new(
-            progress_message => "  %d rows",
-            completion_message => "  Done.  Inserted %d rows."
+            progress_message => "  %d of $linecount rows",
+            completion_message => "  Done.  Inserted %d of $linecount rows."
         );
 
 	my $rows = 0;
@@ -405,7 +427,15 @@ sub create_geo_gtfs_agency {
 END
     $sth->execute($geo_gtfs_agency_name);
     $sth->finish;
-    my $id = $self->dbh->last_insert_id("", "", "", "");
+
+    my $id;
+    my $driver_name = $self->driver_name;
+    if ($driver_name eq "Pg") {
+        $id = $self->dbh->last_insert_id(undef, undef, "geo_gtfs_agency", undef);
+    } else {
+        $id = $self->dbh->last_insert_id("", "", "", "");
+    }
+
     $self->dbh->commit;
     return {
         id => $id
@@ -468,8 +498,10 @@ sub list_feed_instances {
              join geo_gtfs_agency a on a.id = f.geo_gtfs_agency_id;
 END
     $sth->execute();
+    my $count = 0;
     while (my $row = $sth->fetchrow_hashref) {
-        printf("%4d. (%s) %s\n", $row->{name}, $row->{url});
+        $count += 1;
+        printf("%4d. (%s) %s\n", $count, $row->{name}, $row->{url});
         printf("     retrieved %s; last modified %s\n", localtime($row->{retrieved}), localtime($row->{last_modified}));
     }
 }
@@ -524,9 +556,24 @@ sub realtime {
     );
 }
 
+sub realtime_status {
+    my ($self) = @_;
+    return $self->realtime->realtime_status();
+}
+
 ###############################################################################
 # DB WRAPPER
 ###############################################################################
+
+sub drop_tables {
+    my ($self) = @_;
+    $self->db->drop_tables;
+}
+
+sub create_tables {
+    my ($self) = @_;
+    $self->db->create_tables;
+}
 
 sub get_table_info {
     my ($self, $table_name) = @_;
@@ -581,6 +628,16 @@ use Geo::GTFS2::DB;
 sub dbh {
     my ($self) = @_;
     return $self->db->dbh;
+}
+
+sub drh {
+    my ($self) = @_;
+    return $self->db->drh;
+}
+
+sub driver_name {
+    my ($self) = @_;
+    return $self->db->driver_name;
 }
 
 sub db {
