@@ -253,7 +253,6 @@ sub process_gtfs_feed {
             next;
         }
 
-
         my $filename = $member->fileName();
         warn($filename);
 
@@ -492,17 +491,30 @@ sub list_feed_instances {
                f.geo_gtfs_agency_id  as geo_gtfs_agency_id,
                f.url                 as url,
                f.is_active           as is_active,
-               a.name                as name
+               a.name                as name,
+               c.start_date          as start_date,
+               c.end_date            as end_date
         from geo_gtfs_feed_instance fi
              join geo_gtfs_feed f on fi.geo_gtfs_feed_id = f.id
-             join geo_gtfs_agency a on a.id = f.geo_gtfs_agency_id;
+             join geo_gtfs_agency a on a.id = f.geo_gtfs_agency_id
+             left join (
+                 select geo_gtfs_feed_instance_id as geo_gtfs_feed_instance_id,
+                        min(start_date) as start_date,
+                        max(end_date) as end_date
+                 from gtfs_calendar
+                 group by geo_gtfs_feed_instance_id
+             ) c on fi.id = c.geo_gtfs_feed_instance_id;
 END
     $sth->execute();
     my $count = 0;
     while (my $row = $sth->fetchrow_hashref) {
         $count += 1;
         printf("%4d. (%s) %s\n", $count, $row->{name}, $row->{url});
-        printf("     retrieved %s; last modified %s\n", localtime($row->{retrieved}), localtime($row->{last_modified}));
+        printf("       retrieved %s; last modified %s; starts %s; ends %s\n",
+               scalar localtime($row->{retrieved}),
+               scalar localtime($row->{last_modified}),
+               $row->{start_date},
+               $row->{end_date});
     }
 }
 
