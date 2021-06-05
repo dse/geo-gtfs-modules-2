@@ -40,20 +40,20 @@ sub init_dir {
 BEGIN {
     my ($uname) = uname();
     if ($uname =~ m{^Darwin}) {
-	my $ca_file = "/usr/local/opt/curl-ca-bundle/share/ca-bundle.crt";
-	if (-e $ca_file) {
-	    $ENV{HTTPS_CA_FILE} = $ca_file;
-	} else {
-	    warn(<<"END");
+# 	my $ca_file = "/usr/local/opt/curl-ca-bundle/share/ca-bundle.crt";
+# 	if (-e $ca_file) {
+# 	    $ENV{HTTPS_CA_FILE} = $ca_file;
+# 	} else {
+# 	    warn(<<"END");
 
-Looks like you are using a Mac.  You should run:
-    brew install curl-ca-bundle.
-You may also need to run:
-    sudo cpan Crypt::SSLeay
+# Looks like you are using a Mac.  You should run:
+#     brew install curl-ca-bundle.
+# You may also need to run:
+#     sudo cpan Crypt::SSLeay
 
-END
-	    exit(1);
-	}
+# END
+# 	    exit(1);
+# 	}
     }
 }
 

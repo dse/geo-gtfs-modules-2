@@ -2,6 +2,7 @@ package Geo::GTFS2::CommandLine;
 use warnings;
 use strict;
 
+use App::Thingy;
 use base "App::Thingy";
 use Geo::GTFS2;
 

@@ -37,6 +37,8 @@ BEGIN {
                      json
                      no_auto_update
 
+                     output_format
+
                      gtfs_realtime_proto
                      gtfs_realtime_protocol_pulled
 
